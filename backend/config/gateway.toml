@@ -1,0 +1,65 @@
+# =============================================================================
+# Sentinel Gateway Configuration
+# Environment variables override these values with GATEWAY__ prefix
+# e.g., GATEWAY__SERVER__PORT=9090
+# =============================================================================
+
+[server]
+host = "0.0.0.0"
+port = 8080
+deployment_mode = "local"           # "local" or "platform"
+saas_mode = false                   # auto-set to true in local mode
+max_body_size = 10485760            # 10 MB
+# default_tenant_slug = "local"    # auto-set in local mode
+# instance_id = ""                 # auto-generated UUID if not set
+# instance_name = "My Gateway"
+# encryption_key = ""              # 32-byte hex for field encryption (openssl rand -hex 32)
+cors_allow_all = true
+# cors_origins = ["https://app.example.com"]
+
+[database]
+url = "postgres://sentinel:sentinel@localhost:5432/sentinel_gateway"
+max_connections = 20
+
+[auth]
+jwt_private_key_path = "keys/private.pem"
+jwt_public_key_path = "keys/public.pem"
+access_token_ttl_minutes = 15
+refresh_token_ttl_days = 7
+max_failed_logins = 5
+lockout_duration_minutes = 15
+api_key_cache_ttl_secs = 300
+
+[telemetry]
+# otlp_endpoint = "http://otel-collector:4317"
+service_name = "sentinel-gateway"
+log_level = "info"
+prometheus_enabled = true
+
+[proxy]
+default_timeout_ms = 30000
+connect_timeout_ms = 5000
+max_retries = 3
+health_check_interval_secs = 30
+circuit_breaker_threshold = 5
+circuit_breaker_recovery_secs = 60
+pool_idle_timeout_secs = 90
+pool_max_idle_per_host = 256
+max_body_size = 10485760
+graphql_max_depth = 10
+websocket_enabled = true
+lb_strategy = "round_robin"         # "round_robin", "weighted", "least_connections"
+
+[license]
+# license_key = "eyJ..."
+# public_key_path = "keys/license_public.pem"
+grace_period_days = 7
+
+[redis]
+# url = "redis://localhost:6379"
+
+[platform]
+# url = "https://api.sentinel.io"
+# api_key = ""
+sync_interval_secs = 3600
+auto_sync = false

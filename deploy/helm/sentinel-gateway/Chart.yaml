@@ -1,0 +1,23 @@
+apiVersion: v2
+name: sentinel-gateway
+description: Enterprise Universal API Gateway — REST, GraphQL, gRPC proxy with LLM routing
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - api-gateway
+  - llm
+  - proxy
+  - multi-tenant
+home: https://github.com/your-org/sentinel-gateway
+maintainers:
+  - name: Sentinel Team
+dependencies:
+  - name: postgresql
+    version: "16.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "19.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

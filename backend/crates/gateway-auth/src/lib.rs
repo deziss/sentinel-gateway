@@ -1,0 +1,21 @@
+pub mod error;
+pub mod jwt;
+pub mod password;
+pub mod api_key;
+pub mod api_key_cache;
+pub mod context;
+pub mod csrf;
+pub mod middleware;
+pub mod roles;
+pub mod sso;
+pub mod token_blacklist;
+
+pub use error::AuthError;
+pub use jwt::{Claims, JwtService};
+pub use password::PasswordService;
+pub use api_key::ApiKeyService;
+pub use api_key_cache::ApiKeyCache;
+pub use context::{AuthContext, AuthMethod};
+pub use middleware::{auth_middleware, RequireAuth, RequireRole};
+pub use roles::Role;
+pub use token_blacklist::TokenBlacklist;

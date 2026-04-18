@@ -1,0 +1,241 @@
+# =============================================================================
+# Sentinel Gateway — Helm Values
+# =============================================================================
+
+# ─── Replica & Image ──────────────────────────────────────────────────────────
+replicaCount: 3
+
+image:
+  repository: my-org/sentinel-gateway
+  pullPolicy: IfNotPresent
+  tag: ""   # defaults to Chart.appVersion
+
+frontend:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: my-org/sentinel-gateway-frontend
+    pullPolicy: IfNotPresent
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 80
+    annotations: {}
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ─── Service Account ─────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  annotations: {}
+  # For cloud IAM integration:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::role/sentinel
+  #   iam.gke.io/gcp-service-account: sentinel@project.iam.gserviceaccount.com
+  name: ""
+
+# ─── Pod Security ─────────────────────────────────────────────────────────────
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  fsGroup: 65534
+  runAsNonRoot: true
+
+securityContext:
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65534
+  allowPrivilegeEscalation: false
+
+# ─── Service ──────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP       # ClusterIP | NodePort | LoadBalancer
+  port: 8080
+  # nodePort: 30080     # Only when type: NodePort
+  annotations: {}
+  # For internal LB on cloud:
+  #   service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+
+# ─── Ingress ──────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+  hosts:
+    - host: gateway.example.com
+      paths:
+        - path: /api
+          pathType: Prefix
+          service: backend
+        - path: /v1
+          pathType: Prefix
+          service: backend
+        - path: /
+          pathType: Prefix
+          service: frontend
+  tls:
+    - secretName: sentinel-gateway-tls
+      hosts:
+        - gateway.example.com
+
+# ─── Resources ────────────────────────────────────────────────────────────────
+resources:
+  limits:
+    cpu: "2"
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# ─── Autoscaling (HPA) ───────────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # Custom metrics (requires Prometheus adapter):
+  # customMetrics:
+  #   - type: Pods
+  #     pods:
+  #       metric:
+  #         name: http_request_duration_seconds_p99
+  #       target:
+  #         type: AverageValue
+  #         averageValue: 500m
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+
+# ─── Pod Disruption Budget ────────────────────────────────────────────────────
+pdb:
+  enabled: true
+  minAvailable: 2
+
+# ─── Network Policy ──────────────────────────────────────────────────────────
+networkPolicy:
+  enabled: false
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - port: 8080
+
+# ─── Graceful Shutdown ────────────────────────────────────────────────────────
+terminationGracePeriodSeconds: 30
+
+# ─── Application Config (non-secret) ─────────────────────────────────────────
+config:
+  GATEWAY__SERVER__HOST: "0.0.0.0"
+  GATEWAY__SERVER__PORT: "8080"
+  GATEWAY__SERVER__SAAS_MODE: "false"
+  GATEWAY__DATABASE__MAX_CONNECTIONS: "20"
+  GATEWAY__DATABASE__MIN_CONNECTIONS: "5"
+  GATEWAY__AUTH__JWT_PRIVATE_KEY_PATH: "/app/keys/private.pem"
+  GATEWAY__AUTH__JWT_PUBLIC_KEY_PATH: "/app/keys/public.pem"
+  GATEWAY__TELEMETRY__LOG_LEVEL: "info"
+  GATEWAY__TELEMETRY__SERVICE_NAME: "sentinel-gateway"
+  GATEWAY__TELEMETRY__PROMETHEUS_ENABLED: "true"
+  # GATEWAY__TELEMETRY__OTLP_ENDPOINT: "http://otel-collector:4317"
+  RUST_LOG: "info,gateway_server=debug"
+
+# ─── Secrets ──────────────────────────────────────────────────────────────────
+secrets:
+  databaseUrl: ""           # postgres://user:pass@host:5432/sentinel_gateway
+  jwtPrivateKey: ""         # RSA private key PEM content
+  jwtPublicKey: ""          # RSA public key PEM content
+  encryptionKey: ""         # 32-byte hex key for ChaCha20
+  licenseKey: ""            # Optional license key
+
+externalSecret:
+  enabled: false
+  secretName: sentinel-gateway-secrets
+
+# ─── Init Container (DB migration) ───────────────────────────────────────────
+migration:
+  enabled: true
+
+# ─── Health Probes ────────────────────────────────────────────────────────────
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    failureThreshold: 3
+  readiness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  startup:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    failureThreshold: 30
+
+# ─── Extra Volumes ────────────────────────────────────────────────────────────
+extraVolumes: []
+extraVolumeMounts: []
+
+# ─── Node Scheduling ─────────────────────────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - sentinel-gateway
+          topologyKey: kubernetes.io/hostname
+
+# ─── Subchart Toggles ────────────────────────────────────────────────────────
+postgresql:
+  enabled: false
+  auth:
+    database: sentinel_gateway
+    username: sentinel
+    password: ""
+  primary:
+    persistence:
+      size: 20Gi
+
+redis:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false

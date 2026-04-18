@@ -1,0 +1,183 @@
+# =============================================================================
+# Sentinel Gateway — Prometheus Alerting Rules (SLO/SLI)
+# =============================================================================
+#
+# SLI (Service Level Indicators): request rate, latency, error rate, budget health
+# SLO (Service Level Objectives):
+#   - Availability: 99.9% of requests succeed (non-5xx)
+#   - Latency: p95 < 500ms, p99 < 2s
+#   - Backend health: >= 1 healthy backend per tenant
+#   - Budget: no tenant exceeds hard budget limit
+#
+# Load into Prometheus via `rule_files` in prometheus.yml.
+
+groups:
+  - name: sentinel_gateway_slo
+    interval: 30s
+    rules:
+      # ── Availability SLO: 99.9% ─────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Gateway error rate above 0.1% (SLO: 99.9%)"
+          description: "5xx error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+      - alert: CriticalErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "Gateway error rate above 5% — service degraded"
+          description: "5xx error rate: {{ $value | humanizePercentage }}"
+
+      # ── Latency SLO: p95 < 500ms, p99 < 2s ───────────────────────────────
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "Gateway p95 latency above 500ms"
+          description: "p95 latency: {{ $value }}s"
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: critical
+          slo: latency
+        annotations:
+          summary: "Gateway p99 latency above 2s"
+          description: "p99 latency: {{ $value }}s"
+
+      # ── Upstream backend health ──────────────────────────────────────────
+      - alert: BackendUnhealthy
+        expr: backend_health_status == 0
+        for: 1m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Backend {{ $labels.backend_id }} unhealthy"
+          description: "Tenant {{ $labels.tenant_id }} backend {{ $labels.backend_id }} reports unhealthy"
+
+      - alert: AllBackendsUnhealthyForTenant
+        expr: |
+          sum by (tenant_id) (backend_health_status) == 0
+          and
+          count by (tenant_id) (backend_health_status) > 0
+        for: 30s
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} has NO healthy backends"
+
+      # ── Rate limit saturation ────────────────────────────────────────────
+      - alert: HighRateLimitRejectionRate
+        expr: |
+          sum(rate(rate_limited_total[5m])) > 100
+        for: 3m
+        labels:
+          severity: warning
+          slo: capacity
+        annotations:
+          summary: "Rate limit rejections above 100/s — capacity review needed"
+          description: "Tenants hitting rate limits: {{ $value }}/s"
+
+      # ── Budget exhaustion ────────────────────────────────────────────────
+      - alert: BudgetExceededSpike
+        expr: |
+          sum(rate(budget_exceeded_total[15m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          slo: cost
+        annotations:
+          summary: "Multiple tenants hitting budget limits"
+          description: "Budget rejection rate: {{ $value }}/s"
+
+      # ── Token / cost anomaly ─────────────────────────────────────────────
+      - alert: UnusualTokenUsage
+        expr: |
+          sum by (tenant_id) (rate(tokens_total[10m]))
+          > 2 *
+          avg_over_time(sum by (tenant_id) (rate(tokens_total[10m]))[1h:10m])
+        for: 10m
+        labels:
+          severity: warning
+          slo: cost
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} token usage 2x baseline"
+
+      # ── Connection saturation ────────────────────────────────────────────
+      - alert: HighActiveConnections
+        expr: active_connections > 500
+        for: 5m
+        labels:
+          severity: warning
+          slo: capacity
+        annotations:
+          summary: "Active proxy connections above 500 — consider scaling"
+
+      # ── Proxy errors (upstream failures) ─────────────────────────────────
+      - alert: ProxyRequestFailures
+        expr: |
+          (
+            sum by (backend) (rate(proxy_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (backend) (rate(proxy_requests_total[5m]))
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Backend {{ $labels.backend }} error rate above 10%"
+
+  - name: sentinel_gateway_recording
+    interval: 30s
+    rules:
+      # Pre-computed SLI: request success rate (5m window)
+      - record: sli:http_request_success_ratio:5m
+        expr: |
+          sum(rate(http_requests_total{status!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      # Pre-computed SLI: p95 latency by path
+      - record: sli:http_latency_p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (path, le) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+
+      # Error budget burn rate (for 99.9% SLO over 30d)
+      - record: sli:error_budget_burn_rate:1h
+        expr: |
+          (
+            1 - sli:http_request_success_ratio:5m
+          ) / (1 - 0.999)

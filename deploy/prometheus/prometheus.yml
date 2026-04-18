@@ -1,0 +1,39 @@
+# =============================================================================
+# Sentinel Gateway — Prometheus Scrape Configuration
+# =============================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: sentinel-gateway
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []  # Add Alertmanager targets here
+
+scrape_configs:
+  - job_name: sentinel-gateway
+    metrics_path: /metrics
+    scrape_interval: 10s
+    static_configs:
+      - targets:
+          - gateway:8080
+        labels:
+          service: sentinel-gateway
+          env: production
+
+  # Scrape Kubernetes pods if deployed via Helm (service monitor)
+  - job_name: sentinel-gateway-k8s
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: sentinel-gateway
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: http
+        action: keep

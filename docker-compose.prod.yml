@@ -1,0 +1,155 @@
+# =============================================================================
+# Sentinel Gateway — Production Docker Compose
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Adds: PgBouncer, resource limits, stricter health checks, restart policies
+# =============================================================================
+
+services:
+  # ── PostgreSQL (hardened) ──────────────────────────────────────────────────
+  db:
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel_gateway}
+    ports: []  # No host port in production
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Redis (hardened) ───────────────────────────────────────────────────────
+  redis:
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --requirepass ${REDIS_PASSWORD:-}
+    ports: []
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── PgBouncer (connection pooler) ──────────────────────────────────────────
+  pgbouncer:
+    image: edoburu/pgbouncer:1.23.1
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sentinel_gateway}
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: "40"
+      MAX_CLIENT_CONN: "200"
+      MAX_DB_CONNECTIONS: "50"
+      SERVER_TLS_SSLMODE: prefer
+    ports:
+      - "6432:6432"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 6432"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+    restart: unless-stopped
+
+  # ── Migrator ───────────────────────────────────────────────────────────────
+  migrator:
+    environment:
+      GATEWAY__DATABASE__URL: postgres://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sentinel_gateway}
+
+  # ── Backend (production) ───────────────────────────────────────────────────
+  backend:
+    environment:
+      GATEWAY__DATABASE__URL: postgres://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-sentinel_gateway}
+      GATEWAY__REDIS__URL: redis://:${REDIS_PASSWORD:-}@redis:6379
+      GATEWAY__SERVER__SAAS_MODE: "${SAAS_MODE:-false}"
+      GATEWAY__AUTH__JWT_PRIVATE_KEY_PATH: /app/keys/private.pem
+      GATEWAY__AUTH__JWT_PUBLIC_KEY_PATH: /app/keys/public.pem
+      GATEWAY__TELEMETRY__LOG_LEVEL: "${LOG_LEVEL:-warn}"
+      GATEWAY__TELEMETRY__OTLP_ENDPOINT: http://otel-collector:4317
+      GATEWAY__LICENSE__LICENSE_KEY: "${LICENSE_KEY:-}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+      keygen:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+        reservations:
+          cpus: "1.0"
+          memory: 512M
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # ── Frontend (production) ──────────────────────────────────────────────────
+  frontend:
+    ports:
+      - "80:80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── OTel Collector (production) ────────────────────────────────────────────
+  otel-collector:
+    ports: []  # No host ports in production
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    restart: unless-stopped

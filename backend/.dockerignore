@@ -1,0 +1,13 @@
+target/
+.git/
+.gitignore
+.github/
+*.md
+docs/
+tests/
+benches/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

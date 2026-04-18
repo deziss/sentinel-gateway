@@ -1,0 +1,50 @@
+[package]
+name = "gateway-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gateway-server"
+path = "src/main.rs"
+
+[dependencies]
+gateway-db = { path = "../gateway-db" }
+gateway-auth = { path = "../gateway-auth" }
+gateway-tenant = { path = "../gateway-tenant" }
+gateway-telemetry = { path = "../gateway-telemetry" }
+gateway-core = { path = "../gateway-core" }
+gateway-llm = { path = "../gateway-llm" }
+gateway-policy = { path = "../gateway-policy" }
+gateway-audit = { path = "../gateway-audit" }
+gateway-license = { path = "../gateway-license" }
+gateway-mcp = { path = "../gateway-mcp" }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+config = { workspace = true }
+dotenvy = { workspace = true }
+prometheus = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+sqlx = { workspace = true }
+once_cell = { workspace = true }
+futures = { workspace = true }
+tokio-signal = { version = "0.3", package = "tokio" }
+sha2 = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true }
+fred = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+validator = { workspace = true }

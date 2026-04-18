@@ -1,0 +1,31 @@
+[package]
+name = "gateway-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gateway-auth = { path = "../gateway-auth" }
+gateway-core = { path = "../gateway-core" }
+gateway-db = { path = "../gateway-db" }
+gateway-license = { path = "../gateway-license" }
+gateway-llm = { path = "../gateway-llm" }
+gateway-policy = { path = "../gateway-policy" }
+gateway-tenant = { path = "../gateway-tenant" }
+
+axum = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

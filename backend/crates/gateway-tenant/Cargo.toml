@@ -1,0 +1,24 @@
+[package]
+name = "gateway-tenant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gateway-db = { path = "../gateway-db" }
+gateway-auth = { path = "../gateway-auth" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+reqwest = { workspace = true }
+once_cell = { workspace = true }
+tower = { workspace = true }
+bytes = { workspace = true }

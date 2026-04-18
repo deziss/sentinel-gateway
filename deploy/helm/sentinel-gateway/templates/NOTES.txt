@@ -1,0 +1,56 @@
+====================================================================
+  Sentinel Gateway has been deployed!
+====================================================================
+
+Namespace: {{ .Release.Namespace }}
+Release:   {{ .Release.Name }}
+
+── Access ─────────────────────────────────────────────────────────
+
+{{- if .Values.ingress.enabled }}
+  Ingress is enabled. Access the gateway at:
+  {{- range .Values.ingress.hosts }}
+    https://{{ .host }}
+  {{- end }}
+{{- else }}
+  Ingress is disabled. Use port-forward to access:
+
+    # Backend API
+    kubectl port-forward svc/{{ include "sentinel-gateway.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+
+  {{- if .Values.frontend.enabled }}
+    # Frontend UI
+    kubectl port-forward svc/{{ include "sentinel-gateway.fullname" . }}-frontend 3005:{{ .Values.frontend.service.port }} -n {{ .Release.Namespace }}
+  {{- end }}
+{{- end }}
+
+── Quick Start ────────────────────────────────────────────────────
+
+  1. Wait for pods to be ready:
+     kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+  2. Check backend health:
+     curl http://localhost:8080/healthz
+
+  3. Login (default SaaS mode):
+     POST /api/v1/auth/login
+     {"tenant_slug": "default", "email": "admin@example.com", "password": "..."}
+
+── Configuration ──────────────────────────────────────────────────
+
+  ConfigMap: {{ include "sentinel-gateway.fullname" . }}-config
+  {{- if not .Values.externalSecret.enabled }}
+  Secret:    {{ include "sentinel-gateway.fullname" . }}-secrets
+  {{- else }}
+  Secret:    {{ .Values.externalSecret.secretName }} (external)
+  {{- end }}
+
+  View current config:
+    kubectl get configmap {{ include "sentinel-gateway.fullname" . }}-config -n {{ .Release.Namespace }} -o yaml
+
+── Monitoring ─────────────────────────────────────────────────────
+
+  Prometheus scrape is {{ if (index .Values.podAnnotations "prometheus.io/scrape") }}enabled{{ else }}disabled{{ end }}.
+  Metrics endpoint: :8080/metrics
+
+====================================================================
