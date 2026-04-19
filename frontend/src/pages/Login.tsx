@@ -70,6 +70,7 @@ export function Login() {
               <input
                 id="email"
                 type="email"
+                autoComplete="username"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition"
@@ -83,6 +84,7 @@ export function Login() {
               <input
                 id="password"
                 type="password"
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition"
@@ -110,7 +112,7 @@ export function Login() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground">
-          Sentinel Gateway v1.0 · Enterprise API Management
+          Sentinel Gateway v1.2.0 · Enterprise API Management
         </p>
         <p className="text-center text-sm">
           <Link to="/docs" className="text-primary hover:underline font-medium">

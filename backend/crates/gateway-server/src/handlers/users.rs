@@ -28,19 +28,22 @@ pub async fn list(
     Extension(auth): Extension<RequireAuth>,
 ) -> impl IntoResponse {
     let tenant_id = auth.0.tenant_id;
+    let caller_is_super_admin = auth.0.role.is_super_admin();
 
     match s.user_repo.list_by_tenant(tenant_id).await {
         Ok(users) => {
-            let safe_users: Vec<UserResponse> = users.into_iter().map(|u| UserResponse {
-                id: u.id,
-                tenant_id: u.tenant_id,
-                email: u.email,
-                role: u.role,
-                status: u.status,
-                last_login_at: u.last_login_at,
-                created_at: u.created_at,
-                updated_at: u.updated_at,
-            }).collect();
+            let safe_users: Vec<UserResponse> = users.into_iter()
+                .filter(|u| caller_is_super_admin || !matches!(u.role, UserRole::SuperAdmin))
+                .map(|u| UserResponse {
+                    id: u.id,
+                    tenant_id: u.tenant_id,
+                    email: u.email,
+                    role: u.role,
+                    status: u.status,
+                    last_login_at: u.last_login_at,
+                    created_at: u.created_at,
+                    updated_at: u.updated_at,
+                }).collect();
             let total = safe_users.len();
             (StatusCode::OK, Json(serde_json::json!({ "users": safe_users, "total": total }))).into_response()
         }
@@ -101,7 +104,14 @@ pub async fn invite(
             }
             UserRole::SuperAdmin
         }
-        "tenant_admin" => UserRole::TenantAdmin,
+        "tenant_admin" => {
+            if !auth.0.role.is_at_least_tenant_admin() {
+                return (StatusCode::FORBIDDEN, Json(serde_json::json!({
+                    "error": "Only TenantAdmin or higher can create TenantAdmin users"
+                }))).into_response();
+            }
+            UserRole::TenantAdmin
+        }
         "read_only" => UserRole::ReadOnly,
         _ => UserRole::User,
     };
@@ -158,6 +168,9 @@ pub async fn get(
 
     match s.user_repo.find_by_id(id, tenant_id).await {
         Ok(user) => {
+            if matches!(user.role, UserRole::SuperAdmin) && !auth.0.role.is_super_admin() {
+                return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "User not found"}))).into_response();
+            }
             let resp = UserResponse {
                 id: user.id,
                 tenant_id: user.tenant_id,
@@ -194,9 +207,23 @@ pub async fn update(
 
     let tenant_id = auth.0.tenant_id;
 
+    // Block non-SuperAdmins from touching a SuperAdmin account.
+    if let Ok(target) = s.user_repo.find_by_id(id, tenant_id).await {
+        if matches!(target.role, UserRole::SuperAdmin) && !auth.0.role.is_super_admin() {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "User not found"}))).into_response();
+        }
+    }
+
     if let Some(ref role_str) = body.role {
         let role = match role_str.to_lowercase().as_str() {
-            "super_admin" => UserRole::SuperAdmin,
+            "super_admin" => {
+                if !auth.0.role.is_super_admin() {
+                    return (StatusCode::FORBIDDEN, Json(serde_json::json!({
+                        "error": "Only SuperAdmin can assign SuperAdmin role"
+                    }))).into_response();
+                }
+                UserRole::SuperAdmin
+            }
             "tenant_admin" => UserRole::TenantAdmin,
             "read_only" => UserRole::ReadOnly,
             _ => UserRole::User,
@@ -244,6 +271,12 @@ pub async fn deactivate(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let tenant_id = auth.0.tenant_id;
+
+    if let Ok(target) = s.user_repo.find_by_id(id, tenant_id).await {
+        if matches!(target.role, UserRole::SuperAdmin) && !auth.0.role.is_super_admin() {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "User not found"}))).into_response();
+        }
+    }
 
     match s.user_repo.update_status(id, tenant_id, UserStatus::Inactive).await {
         Ok(_) => {

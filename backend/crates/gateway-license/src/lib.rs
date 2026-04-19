@@ -6,7 +6,7 @@ pub mod client;
 pub mod activation;
 
 pub use error::LicenseError;
-pub use features::{DeploymentMode, FeatureFlags, Plan};
+pub use features::{DeploymentMode, Feature, FeatureFlags, Plan};
 pub use validator::LicenseValidator;
 pub use client::LicenciaClient;
 pub use activation::{ActivationService, ActivationState};

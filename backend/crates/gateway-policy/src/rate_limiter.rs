@@ -79,7 +79,10 @@ pub struct RateLimitResult {
 
 // ── Token Bucket (in-memory) ───────────────────────────────────────────────
 
-pub(crate) struct TokenBucket {
+/// Internal token-bucket algorithm. Exposed only because it's a variant
+/// payload of the public `BucketEntry` enum — do not construct directly;
+/// go through `RateLimiter::new_in_memory()`.
+pub struct TokenBucket {
     tokens: f64,
     last_refill: Instant,
     capacity: f64,
@@ -136,7 +139,9 @@ impl TokenBucket {
 
 // ── Sliding Window (in-memory) ─────────────────────────────────────────────
 
-pub(crate) struct SlidingWindow {
+/// Internal sliding-window algorithm. See the `TokenBucket` note above —
+/// do not construct directly; use `RateLimiter::new_in_memory_sliding()`.
+pub struct SlidingWindow {
     timestamps: VecDeque<Instant>,
     window: Duration,
     limit: u32,
@@ -205,7 +210,10 @@ pub enum RateLimitAlgorithm {
 
 // ── Main Rate Limiter ──────────────────────────────────────────────────────
 
-enum BucketEntry {
+/// Bucket wrapper for the in-memory backend. Public only because it's the
+/// value type of `RateLimiter::InMemory.buckets`. Callers should operate
+/// through `check` / `consume` on `RateLimiter` rather than touching this.
+pub enum BucketEntry {
     Token(TokenBucket),
     Sliding(SlidingWindow),
 }

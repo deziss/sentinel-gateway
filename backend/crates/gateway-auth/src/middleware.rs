@@ -7,6 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::{
     api_key::ApiKeyService,
@@ -17,7 +18,7 @@ use crate::{
     roles::Role,
     token_blacklist::TokenBlacklist,
 };
-use gateway_db::repository::{ApiKeyRepository, UserRepository};
+use gateway_db::repository::{ApiKeyRepository, UserRepository, VirtualKeyRepository};
 use gateway_db::models::user::UserRole;
 
 /// Auth state shared via Axum layer state.
@@ -28,6 +29,7 @@ pub struct AuthState {
     pub api_key_cache: Arc<ApiKeyCache>,
     pub api_key_repo: Arc<ApiKeyRepository>,
     pub user_repo: Arc<UserRepository>,
+    pub virtual_key_repo: Arc<VirtualKeyRepository>,
 }
 
 /// Axum extension carrying the authenticated identity context.
@@ -78,17 +80,16 @@ pub async fn optional_auth_middleware(
 
 /// Core authentication logic shared by both middleware variants.
 async fn authenticate(state: &AuthState, headers: &HeaderMap) -> Result<AuthContext, AuthError> {
-    // Strategy 1: X-API-Key header (explicit API key)
+    // Strategy 1: X-API-Key header (internal API key OR virtual key)
     if let Some(key_str) = headers.get("X-API-Key").and_then(|v| v.to_str().ok()) {
-        return authenticate_api_key(state, key_str).await;
+        return dispatch_key(state, key_str).await;
     }
 
     // Strategy 2: Authorization header
     if let Some(auth_header) = headers.get("Authorization").and_then(|v| v.to_str().ok()) {
         if let Some(bearer_value) = auth_header.strip_prefix("Bearer ") {
-            // Distinguish API key (sg_ prefix) from JWT
-            if bearer_value.starts_with("sg_") {
-                return authenticate_api_key(state, bearer_value).await;
+            if bearer_value.starts_with("sg_") || bearer_value.starts_with("vk_") {
+                return dispatch_key(state, bearer_value).await;
             } else {
                 return authenticate_jwt(state, bearer_value);
             }
@@ -96,6 +97,57 @@ async fn authenticate(state: &AuthState, headers: &HeaderMap) -> Result<AuthCont
     }
 
     Err(AuthError::Unauthorized("Missing authentication".into()))
+}
+
+/// Dispatch a key-based credential: `vk_*` → virtual key, `sg_*` → internal API key.
+async fn dispatch_key(state: &AuthState, key: &str) -> Result<AuthContext, AuthError> {
+    if key.starts_with("vk_") {
+        authenticate_virtual_key(state, key).await
+    } else {
+        authenticate_api_key(state, key).await
+    }
+}
+
+/// Validate a virtual key: lookup by SHA-256 hash, check active + expiry.
+async fn authenticate_virtual_key(state: &AuthState, key: &str) -> Result<AuthContext, AuthError> {
+    let key_hash = ApiKeyService::hash(key);
+
+    let vk = state.virtual_key_repo
+        .find_by_hash(&key_hash)
+        .await
+        .map_err(|_| AuthError::ApiKeyInvalid)?;
+
+    if !vk.is_active {
+        return Err(AuthError::ApiKeyInvalid);
+    }
+
+    if let Some(expires_at) = vk.expires_at {
+        if expires_at < chrono::Utc::now() {
+            return Err(AuthError::ApiKeyInvalid);
+        }
+    }
+
+    // Fire-and-forget: update last_used_at
+    let repo = state.virtual_key_repo.clone();
+    let id = vk.id;
+    tokio::spawn(async move {
+        if let Err(e) = repo.touch_used(id).await {
+            warn!("Failed to update virtual key last_used_at: {e}");
+        }
+    });
+
+    let user_id = vk.user_id.unwrap_or_else(Uuid::nil);
+    Ok(AuthContext::from_virtual_key(
+        vk.id,
+        user_id,
+        vk.tenant_id,
+        vk.backend_id,
+        vk.team_id,
+        vk.allowed_models.clone(),
+        vk.rate_limit_rpm,
+        vk.budget_daily,
+        vk.budget_monthly,
+    ))
 }
 
 /// Validate a JWT Bearer token.

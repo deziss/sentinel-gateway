@@ -35,6 +35,13 @@ Three defensible claims:
 | **Telemetry** | OpenTelemetry (traces + metrics + logs), Prometheus, W3C TraceContext, **optional export to Langfuse / Helicone** |
 | **Multi-tenancy** | Subdomain/header/JWT resolution, per-tenant feature flags, quotas, SaaS toggle |
 | **Offline license** | RSA signature verification, no phone-home, community / professional / enterprise plans |
+| **Plan tiers** | Three-tier feature matrix (OSS / Pro / Enterprise) with runtime feature-gate enforcement (`402 feature_gated` responses) and upsell UI |
+| **SSO** *(Ent)* | OAuth2 / OIDC with 5 providers (Keycloak, Okta, Google, GitHub, Microsoft Entra), PKCE S256, auto-provisioning |
+| **Feedback** *(Pro+)* | End-user thumbs-up/down + comments keyed to LLM logs, stats aggregation |
+| **Organizations** *(Ent)* | Tenant-of-tenants grouping for billing, cross-tenant views, enterprise accounts |
+| **Data-lake export** *(Ent)* | NDJSON spool to S3 / GCS / file with per-tenant retention enforcement |
+| **Plugin framework** | Trait-based lifecycle hooks (Input / Output / Guardrail / Observer / Auth) with ordered pipelines + terminal decisions |
+| **Virtual keys** | Portkey-style `vk_*` keys pinned to backend, with per-key rate limits + budget |
 
 ## Repository layout
 
@@ -54,9 +61,10 @@ sentinel-gateway/
 │   │   ├── gateway-mcp/            # MCP dual-role gateway (protocol + client + server + registry)
 │   │   └── gateway-server/         # Axum binary + handlers + routes
 │   └── migrations/                 # 001–017 SQL migrations
-├── frontend/                       # React 19 + Vite 6 + Tailwind 4 + shadcn/ui + fp-ts + Zustand
+├── frontend/                       # React 19 + Vite 6 + Tailwind 4 + shadcn/ui + fp-ts + Zustand + Vitest
 │   └── src/pages/                  # Dashboard, Backends, Users, API Keys, Routes, Audit, Settings,
-│                                   # LlmPlayground, LlmAnalytics, LlmCatalog, McpServers, Prompts, Guardrails
+│                                   # LlmPlayground, LlmAnalytics, LlmCatalog, McpServers, Prompts, Guardrails,
+│                                   # Feedback, SsoProviders, Organizations, Billing
 ├── deploy/
 │   ├── docker/                     # OTel collector config
 │   └── helm/sentinel-gateway/      # Chart.yaml, values.yaml, 13 templates (HA-ready)

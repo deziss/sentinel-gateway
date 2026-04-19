@@ -71,4 +71,110 @@ impl CostCalculator {
     pub fn pricing_table() -> &'static HashMap<&'static str, ModelPricing> {
         &PRICING_TABLE
     }
+
+    /// Calculate cost with an optional tenant-specific override.
+    ///
+    /// Override fields are applied first (input/output), then `markup` is
+    /// multiplied on top. If no override is supplied, uses the default table.
+    pub fn calculate_with_override(
+        model: &str,
+        tokens_in: u64,
+        tokens_out: u64,
+        override_input_per_1m: Option<f64>,
+        override_output_per_1m: Option<f64>,
+        markup: f64,
+    ) -> f64 {
+        let default = PRICING_TABLE.get(model).cloned().unwrap_or(ModelPricing {
+            input_per_1m: 2.50,
+            output_per_1m: 10.0,
+        });
+        let input_price = override_input_per_1m.unwrap_or(default.input_per_1m);
+        let output_price = override_output_per_1m.unwrap_or(default.output_per_1m);
+        let cost = (tokens_in as f64 / 1_000_000.0) * input_price
+            + (tokens_out as f64 / 1_000_000.0) * output_price;
+        cost * markup.max(0.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "expected ≈ {b}, got {a}");
+    }
+
+    #[test]
+    fn override_with_no_overrides_matches_default_table_and_markup_1() {
+        // 1M in + 1M out on a model, markup 1.0 → cost = input_price + output_price
+        let c = CostCalculator::calculate_with_override(
+            "gpt-4o", 1_000_000, 1_000_000, None, None, 1.0,
+        );
+        let table = CostCalculator::pricing_table()
+            .get("gpt-4o")
+            .cloned()
+            .expect("gpt-4o present in default pricing table");
+        approx(c, table.input_per_1m + table.output_per_1m);
+    }
+
+    #[test]
+    fn override_input_price_is_applied() {
+        // Pure-input: 500k tokens @ $10/1M = $5
+        let c = CostCalculator::calculate_with_override(
+            "gpt-4o", 500_000, 0, Some(10.0), None, 1.0,
+        );
+        approx(c, 5.0);
+    }
+
+    #[test]
+    fn override_output_price_is_applied() {
+        // Pure-output: 500k tokens @ $20/1M = $10
+        let c = CostCalculator::calculate_with_override(
+            "gpt-4o", 0, 500_000, None, Some(20.0), 1.0,
+        );
+        approx(c, 10.0);
+    }
+
+    #[test]
+    fn markup_multiplier_scales_final_cost() {
+        // Both overridden to $1/1M → 1M in + 1M out = $2, × 2.0 = $4
+        let c = CostCalculator::calculate_with_override(
+            "gpt-4o", 1_000_000, 1_000_000, Some(1.0), Some(1.0), 2.0,
+        );
+        approx(c, 4.0);
+    }
+
+    #[test]
+    fn negative_markup_is_clamped_to_zero() {
+        let c = CostCalculator::calculate_with_override(
+            "gpt-4o", 1_000_000, 1_000_000, Some(1.0), Some(1.0), -5.0,
+        );
+        approx(c, 0.0);
+    }
+
+    #[test]
+    fn zero_tokens_gives_zero_cost() {
+        let c = CostCalculator::calculate_with_override(
+            "gpt-4o", 0, 0, None, None, 1.0,
+        );
+        approx(c, 0.0);
+    }
+
+    #[test]
+    fn unknown_model_uses_fallback_pricing() {
+        // Fallback is 2.50 / 10.0 per 1M
+        let c = CostCalculator::calculate_with_override(
+            "unknown-model-xyz", 1_000_000, 1_000_000, None, None, 1.0,
+        );
+        approx(c, 2.50 + 10.0);
+    }
+
+    #[test]
+    fn partial_override_input_only_falls_back_to_default_output() {
+        let c = CostCalculator::calculate_with_override(
+            "gpt-4o", 1_000_000, 1_000_000, Some(0.0), None, 1.0,
+        );
+        let table = CostCalculator::pricing_table().get("gpt-4o").cloned().unwrap();
+        approx(c, 0.0 + table.output_per_1m);
+    }
 }

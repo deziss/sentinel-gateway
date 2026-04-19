@@ -9,6 +9,7 @@ pub mod federation;
 pub mod cache;
 pub mod pii;
 pub mod smart_router;
+pub mod privacy;
 
 pub use error::LlmError;
 pub use provider::{LlmProvider, ProviderType};

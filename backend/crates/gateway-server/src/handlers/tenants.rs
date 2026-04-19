@@ -4,6 +4,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::handlers::feature_gate::require_super_admin;
 use crate::state::AppState;
 use gateway_auth::middleware::RequireAuth;
 use gateway_db::models::tenant::{CreateTenant, UpdateTenant};
@@ -12,8 +13,9 @@ use gateway_audit::events::{AuditEvent, EventType};
 
 pub async fn list(
     State(s): State<Arc<AppState>>,
-    Extension(_auth): Extension<RequireAuth>,
+    Extension(auth): Extension<RequireAuth>,
 ) -> impl IntoResponse {
+    if let Err(resp) = require_super_admin(&auth) { return resp; }
     match s.tenant_repo.list().await {
         Ok(tenants) => {
             let total = tenants.len();
@@ -55,6 +57,7 @@ pub async fn create(
     Extension(auth): Extension<RequireAuth>,
     Json(body): Json<CreateTenantRequest>,
 ) -> impl IntoResponse {
+    if let Err(resp) = require_super_admin(&auth) { return resp; }
     if let Err(e) = body.validate() {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();
     }
@@ -99,8 +102,12 @@ pub async fn create(
 
 pub async fn get(
     State(s): State<Arc<AppState>>,
+    Extension(auth): Extension<RequireAuth>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if !auth.0.role.is_super_admin() && auth.0.tenant_id != id {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Tenant not found"}))).into_response();
+    }
     match s.tenant_repo.find_by_id(id).await {
         Ok(tenant) => (StatusCode::OK, Json(serde_json::json!(tenant))).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Tenant not found"}))).into_response(),
@@ -125,10 +132,16 @@ pub struct UpdateTenantRequest {
 
 pub async fn update(
     State(s): State<Arc<AppState>>,
-    Extension(_auth): Extension<RequireAuth>,
+    Extension(auth): Extension<RequireAuth>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateTenantRequest>,
 ) -> impl IntoResponse {
+    // TenantAdmin may update own tenant; SuperAdmin may update any.
+    if !auth.0.role.is_super_admin() && auth.0.tenant_id != id {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({
+            "error": "Cannot modify another tenant"
+        }))).into_response();
+    }
     if let Err(e) = body.validate() {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response();
     }
@@ -158,9 +171,10 @@ pub async fn update(
 
 pub async fn delete(
     State(s): State<Arc<AppState>>,
-    Extension(_auth): Extension<RequireAuth>,
+    Extension(auth): Extension<RequireAuth>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if let Err(resp) = require_super_admin(&auth) { return resp; }
     match s.tenant_repo.delete(id).await {
         Ok(_) => {
             s.tenant_service.invalidate_cache(id);

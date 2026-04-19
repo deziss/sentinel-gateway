@@ -306,6 +306,111 @@ export function ApiReference() {
   "secret": "whsec_..."
 }`}</Pre>
 
+      <H2 id="feedback">Feedback <Code>Pro+</Code></H2>
+      <P>
+        End-user feedback on LLM responses (thumbs-up/down/comments).
+        Gated — returns <Code>402 feature_gated</Code> on Community plan.
+      </P>
+
+      <H3>Submit feedback</H3>
+      <Endpoint method="POST" path="/api/v1/feedback" />
+      <Pre lang="json">{`{
+  "llm_log_id": "uuid",        // or "request_id": "..." — one is required
+  "rating": 1,                  // -1 | 0 | 1
+  "comment": "Helpful answer",
+  "metadata": {}
+}`}</Pre>
+
+      <H3>List feedback</H3>
+      <Endpoint method="GET" path="/api/v1/feedback?limit=50" />
+
+      <H3>Stats (aggregate over window)</H3>
+      <Endpoint method="GET" path="/api/v1/feedback/stats?days=30" />
+
+      <H2 id="sso">SSO / OAuth2 <Code>Enterprise</Code></H2>
+      <P>
+        OAuth2 / OIDC with 5 providers: Keycloak, Okta, Google, GitHub, Microsoft Entra.
+        All OIDC providers use PKCE S256 + CSRF state; GitHub uses its non-OIDC flow.
+      </P>
+
+      <H3>Start SSO flow (public, unauthenticated)</H3>
+      <Endpoint method="GET" path="/api/v1/auth/sso/:slug/authorize?tenant=<slug>" />
+
+      <H3>Provider callback</H3>
+      <Endpoint method="GET" path="/api/v1/auth/sso/:slug/callback" />
+      <P>Issues JWT access + refresh tokens; auto-provisions user when <Code>auto_provision=true</Code>.</P>
+
+      <H3>List providers (TenantAdmin+)</H3>
+      <Endpoint method="GET" path="/api/v1/sso/providers" />
+
+      <H3>Create provider</H3>
+      <Endpoint method="POST" path="/api/v1/sso/providers" />
+      <Pre lang="json">{`{
+  "kind": "keycloak",           // keycloak | okta | google | github | microsoft | oidc_generic
+  "display_name": "Acme SSO",
+  "slug": "acme",
+  "client_id": "...",
+  "client_secret": "...",
+  "issuer_url": "https://kc.acme.com/realms/main",
+  "scopes": "openid profile email",
+  "default_role": "user",
+  "auto_provision": true
+}`}</Pre>
+
+      <H3>Delete provider (soft-delete)</H3>
+      <Endpoint method="DELETE" path="/api/v1/sso/providers/:id" />
+
+      <H2 id="organizations">Organizations <Code>Enterprise</Code></H2>
+      <P>Tenant-of-tenants grouping for billing, cross-tenant views, and multi-environment accounts. SuperAdmin only.</P>
+
+      <H3>List organizations</H3>
+      <Endpoint method="GET" path="/api/v1/organizations" />
+
+      <H3>Create organization</H3>
+      <Endpoint method="POST" path="/api/v1/organizations" />
+      <Pre lang="json">{`{ "slug": "acme", "name": "Acme Corp", "plan": "enterprise", "metadata": {} }`}</Pre>
+
+      <H3>List tenants under org / assign tenant</H3>
+      <Endpoint method="GET" path="/api/v1/organizations/:id/tenants" />
+      <Endpoint method="POST" path="/api/v1/organizations/:id/tenants/:tenant_id" />
+
+      <H2 id="license">License &amp; Plan Tiers</H2>
+      <P>Three plan tiers — features enabled per tier are returned by the <Code>/features</Code> endpoint.</P>
+
+      <H3>Current activation state</H3>
+      <Endpoint method="GET" path="/api/v1/license/status" />
+
+      <H3>Feature matrix (drives upsell UI + nav)</H3>
+      <Endpoint method="GET" path="/api/v1/license/features" />
+      <Pre lang="json">{`{
+  "plan": "professional",
+  "features": {
+    "plan": "professional",
+    "max_requests_per_month": 100000,
+    "logs_enabled": true,
+    "feedback_enabled": true,
+    "semantic_cache_enabled": true,
+    "sso_enabled": false,
+    "audit_logs_enabled": false,
+    ...
+  }
+}`}</Pre>
+
+      <H3>Feature-gated errors</H3>
+      <P>
+        When a handler refuses because the plan doesn't include a feature, the gateway returns
+        <Code>402 Payment Required</Code>:
+      </P>
+      <Pre lang="json">{`{
+  "error": {
+    "code": "feature_gated",
+    "message": "Feature 'sso' requires plan 'enterprise' or higher. Current plan: 'professional'.",
+    "feature": "sso",
+    "required_plan": "enterprise",
+    "current_plan": "professional"
+  }
+}`}</Pre>
+
       <H2 id="settings">Settings</H2>
 
       <H3>Get tenant settings</H3>

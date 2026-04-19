@@ -100,6 +100,27 @@ pub async fn chat_completions(
         .unwrap_or("gpt-4o")
         .to_string();
 
+    // 1a. Resolve tenant settings (privacy_mode + llm_cache_enabled)
+    let settings_map = state.setting_repo.get_map(tenant_id).await.unwrap_or_default();
+    let privacy_mode = settings_map
+        .get("privacy_mode")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let cache_enabled = settings_map
+        .get("llm_cache_enabled")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    // 1b. Cache lookup (per-tenant scoped) — only when enabled and safe
+    if cache_enabled && gateway_llm::SemanticCache::should_cache(&body) {
+        let fp = gateway_llm::SemanticCache::cache_key(&body);
+        let key = gateway_llm::privacy::tenant_cache_key(tenant_id, &fp);
+        if let Some(hit) = state.llm_cache.get(&key) {
+            state.metrics.record_tokens(&tenant_id.to_string(), &hit.model, hit.tokens_input, 0);
+            return (StatusCode::OK, Json(hit.response)).into_response();
+        }
+    }
+
     // 2. Route to provider
     let provider = match state.llm_router.select(&model) {
         Ok(p) => p,
@@ -214,8 +235,23 @@ pub async fn chat_completions(
         .and_then(|t| t.as_u64())
         .unwrap_or(0);
 
-    // 9. Calculate cost
-    let cost = CostCalculator::calculate(&resolved_model, tokens_in, tokens_out);
+    // 9. Calculate cost (with per-tenant pricing override if present)
+    let pricing_override = state.tenant_pricing_repo
+        .get_for_model(tenant_id, &resolved_model)
+        .await
+        .ok()
+        .flatten();
+    let cost = match pricing_override {
+        Some(p) => CostCalculator::calculate_with_override(
+            &resolved_model,
+            tokens_in,
+            tokens_out,
+            p.input_per_1m,
+            p.output_per_1m,
+            p.markup_multiplier,
+        ),
+        None => CostCalculator::calculate(&resolved_model, tokens_in, tokens_out),
+    };
 
     // 10. Record metrics
     let tenant_str = tenant_id.to_string();
@@ -238,6 +274,29 @@ pub async fn chat_completions(
         "LLM request completed"
     );
 
+    // 10a. Apply privacy mode (redact bodies before observability/log capture)
+    let (log_request, log_response) = if privacy_mode {
+        (
+            gateway_llm::privacy::redact_request(&body),
+            gateway_llm::privacy::redact_response(&openai_resp),
+        )
+    } else {
+        (body.clone(), openai_resp.clone())
+    };
+
+    // 10b. Populate cache (best-effort; only for deterministic requests)
+    if cache_enabled && gateway_llm::SemanticCache::should_cache(&body) {
+        let fp = gateway_llm::SemanticCache::cache_key(&body);
+        let key = gateway_llm::privacy::tenant_cache_key(tenant_id, &fp);
+        state.llm_cache.put(key, gateway_llm::cache::CachedResponse {
+            response: openai_resp.clone(),
+            model: resolved_model.clone(),
+            tokens_input: tokens_in,
+            tokens_output: tokens_out,
+            cost_usd: cost,
+        });
+    }
+
     // 11. Push to optional observability export (Langfuse / Helicone).
     //     Fire-and-forget — no-op if exporter is disabled.
     if state.observability_exporter.is_enabled() {
@@ -249,8 +308,8 @@ pub async fn chat_completions(
             api_key_id,
             model: resolved_model.clone(),
             provider: provider.provider_type.to_string(),
-            request: body.clone(),
-            response: openai_resp.clone(),
+            request: log_request.clone(),
+            response: log_response.clone(),
             status_code: 200,
             latency_ms: latency as u64,
             prompt_tokens: tokens_in,
@@ -260,7 +319,37 @@ pub async fn chat_completions(
         });
     }
 
-    // 12. Record usage in DB (fire-and-forget)
+    // 12. Enqueue full LLM log entry (write-behind, batched)
+    //     Captures redacted request + response for search/replay.
+    let log_entry = gateway_db::models::llm_log::CreateLlmLog {
+        tenant_id,
+        user_id: Some(user_id),
+        api_key_id,
+        virtual_key_id: auth.0.method.virtual_key_id(),
+        backend_id: Some(provider.id),
+        model: resolved_model.clone(),
+        provider: provider.provider_type.to_string(),
+        endpoint_path: "/v1/chat/completions".to_string(),
+        request: log_request,
+        response: Some(log_response),
+        status_code: 200,
+        tokens_input: tokens_in as i64,
+        tokens_output: tokens_out as i64,
+        cost_usd: cost,
+        latency_ms: latency,
+        cached: false,
+        pii_detected: false,
+        error: None,
+        trace_id: None,
+        request_id: None,
+    };
+    state.llm_log_service.log(log_entry.clone());
+    // Also push to optional data-lake exporter (S3/GCS/file); no-op if disabled.
+    if state.data_lake.is_enabled() {
+        state.data_lake.push(log_entry);
+    }
+
+    // 13. Record usage in DB (fire-and-forget)
     let repo = state.usage_record_repo.clone();
     let record = CreateUsageRecord {
         tenant_id,
@@ -307,7 +396,7 @@ pub async fn completions(
 /// `POST /v1/embeddings` — embeddings endpoint.
 pub async fn embeddings(
     State(state): State<Arc<AppState>>,
-    Extension(auth): Extension<RequireAuth>,
+    Extension(_auth): Extension<RequireAuth>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let model = body.get("model")

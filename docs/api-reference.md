@@ -21,6 +21,9 @@ All request/response bodies are JSON unless noted. All timestamps are RFC 3339 U
 - [Prompts (versioning)](#prompts-versioning)
 - [MCP (Model Context Protocol)](#mcp-model-context-protocol)
 - [Webhooks + DLQ](#webhooks--dlq)
+- [Feedback](#feedback) *(Pro+)*
+- [SSO / OAuth2](#sso--oauth2) *(Enterprise)*
+- [Organizations](#organizations) *(Enterprise)*
 - [Audit Logs](#audit-logs)
 - [Usage](#usage)
 - [License](#license)
@@ -314,6 +317,113 @@ Force-requeue a failed event for immediate retry.
 
 ---
 
+## Feedback
+
+*Requires Professional plan or higher. Returns `402 feature_gated` otherwise.*
+
+### `POST /feedback`
+Submit end-user feedback on an LLM response.
+
+**Request**
+```json
+{
+  "llm_log_id": "uuid",          // OR "request_id" — one required
+  "request_id": "user-supplied-id",
+  "rating": 1,                    // -1 | 0 | 1
+  "comment": "Helpful answer",
+  "metadata": { "source": "web" }
+}
+```
+**Response 201** — `{ "id": "uuid" }`
+
+### `GET /feedback`
+List recent feedback (tenant-scoped). Query: `limit` (1–500, default 50).
+
+### `GET /feedback/stats`
+Aggregate counts. Query: `days` (1–365, default 30).
+```json
+{
+  "total": 42, "positive": 30, "negative": 12,
+  "positive_ratio": 0.71, "window_days": 30
+}
+```
+
+---
+
+## SSO / OAuth2
+
+*Requires Enterprise plan. Returns `402 feature_gated` otherwise.*
+
+Supports 5 providers: Keycloak, Okta, Google, GitHub, Microsoft Entra.
+All OIDC providers use PKCE S256 + CSRF state token. GitHub uses its
+non-OIDC OAuth flow (no PKCE).
+
+### Public endpoints (unauthenticated)
+
+### `GET /auth/sso/:slug/authorize`
+Redirects the user to the provider's authorize URL. Stores state + PKCE verifier
+server-side (single-use).
+
+**Query:** `tenant=<tenant_slug>` *(required)*, `redirect_after=<url>`
+
+### `GET /auth/sso/:slug/callback`
+Provider callback. Exchanges code → token → userinfo, auto-provisions user
+(when `auto_provision=true`), issues JWT access + refresh tokens.
+
+**Response 200**
+```json
+{
+  "access_token": "eyJ...", "refresh_token": "eyJ...",
+  "token_type": "Bearer", "expires_in": 900,
+  "user": { "id": "...", "email": "...", "tenant_id": "...", "role": "user" },
+  "redirect_after": "/dashboard"
+}
+```
+
+### Admin endpoints *(TenantAdmin+)*
+
+### `GET /sso/providers`
+List SSO providers for the current tenant.
+
+### `POST /sso/providers`
+```json
+{
+  "kind": "keycloak",              // keycloak | okta | google | github | microsoft | oidc_generic
+  "display_name": "Acme Keycloak",
+  "slug": "acme-keycloak",
+  "client_id": "...",
+  "client_secret": "...",
+  "issuer_url": "https://kc.acme.com/realms/main",  // required for Keycloak/Okta/generic
+  "scopes": "openid profile email",
+  "default_role": "user",          // user | tenant_admin | read_only
+  "auto_provision": true
+}
+```
+
+### `DELETE /sso/providers/:id`
+Soft-deletes (sets `is_active=false`). Existing linked identities remain.
+
+---
+
+## Organizations
+
+*Requires Enterprise plan. SuperAdmin-only. Parent grouping for multiple tenants.*
+
+### `GET /organizations`
+List all active organizations.
+
+### `POST /organizations`
+```json
+{ "slug": "acme", "name": "Acme Corp", "plan": "enterprise", "metadata": {} }
+```
+
+### `GET /organizations/:id`
+### `DELETE /organizations/:id` — soft-delete
+### `GET /organizations/:id/tenants` — UUIDs of tenants under this org
+### `POST /organizations/:id/tenants/:tenant_id` — assign tenant to org
+
+---
+
 ## Audit Logs
 
 ### `GET /audit-logs`
@@ -361,8 +471,53 @@ Pass `cursor_ts`/`cursor_id` from `next_cursor` to fetch the next page.
 Current activation state: `unlicensed`, `offline_valid`, `online_valid`, `grace_period`, or `invalid`.
 Includes current `features`, `deployment_mode`, `instance_id`.
 
+### `GET /license/features`
+Full feature matrix for the current plan. Frontend uses this to drive upsell UI + conditional nav.
+
+**Response 200**
+```json
+{
+  "plan": "professional",
+  "features": {
+    "plan": "professional",
+    "max_requests_per_month": 100000,
+    "logs_enabled": true,
+    "feedback_enabled": true,
+    "semantic_cache_enabled": true,
+    "sso_enabled": false,
+    "audit_logs_enabled": false,
+    "org_management_enabled": false,
+    ...
+  }
+}
+```
+
 ### `POST /license/activate`
 Trigger manual license (re)activation.
+
+### Plan tiers
+
+| Tier | Monthly requests | Retention | Notable features |
+|------|------------------|-----------|------------------|
+| **Community** (OSS) | Unlimited (self-host) | — | Universal API, fallbacks, loadbalancing, conditional routing, retries, timeouts |
+| **Professional** | 100K | 30 days | + Observability (logs/traces/feedback/alerts), caching (simple + semantic), prompts (unlimited), guardrails (+PII), RBAC, teams |
+| **Enterprise** | Custom | Custom | + FinOps dashboard, SSO, audit logs, SCIM, JWT auth, BYOK, datalake exports, org management, SOC2/GDPR/BAA, VPC |
+
+### Feature-gated errors
+
+When a handler refuses due to plan:
+```json
+HTTP 402 Payment Required
+{
+  "error": {
+    "code": "feature_gated",
+    "message": "Feature 'sso' requires plan 'enterprise' or higher. Current plan: 'professional'.",
+    "feature": "sso",
+    "required_plan": "enterprise",
+    "current_plan": "professional"
+  }
+}
+```
 
 ---
 

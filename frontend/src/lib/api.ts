@@ -727,3 +727,238 @@ export async function createEmbedding(model: string, input: string) {
 export async function proxyRequest(modelId: string, messages: ChatMessage[], options: ChatCompletionOptions = {}) {
   return chatCompletion(modelId, messages, options)
 }
+
+// ── License / Feature Flags ─────────────────────────────────────────────────
+
+export type PlanTier = "community" | "professional" | "enterprise";
+
+/** Flags returned by GET /license/features — matches backend `FeatureFlags`. */
+export interface FeatureFlags {
+  plan: PlanTier;
+  max_requests_per_month: number;
+  // Observability
+  logs_enabled: boolean;
+  traces_enabled: boolean;
+  feedback_enabled: boolean;
+  alerts_enabled: boolean;
+  finops_dashboard_enabled: boolean;
+  retention_days: number;
+  // Gateway
+  llm_key_management: boolean;
+  simple_cache_enabled: boolean;
+  semantic_cache_enabled: boolean;
+  // Prompts
+  prompt_templates_enabled: boolean;
+  max_prompt_templates: number;
+  playground_enabled: boolean;
+  prompt_versioning_enabled: boolean;
+  // Guardrails
+  deterministic_guardrails: boolean;
+  partner_guardrails: boolean;
+  pii_redaction_enabled: boolean;
+  // Security
+  rbac_enabled: boolean;
+  team_management: boolean;
+  audit_logs_enabled: boolean;
+  scim_provisioning: boolean;
+  jwt_auth_enabled: boolean;
+  byok_enabled: boolean;
+  sso_enabled: boolean;
+  // Enterprise
+  org_management_enabled: boolean;
+  datalake_export_enabled: boolean;
+  private_llm_cloud: boolean;
+  autonomous_fine_tuning: boolean;
+  // Accept extra fields without breaking the type.
+  [k: string]: unknown;
+}
+
+export interface FeaturesResponse {
+  plan: PlanTier;
+  features: FeatureFlags;
+}
+
+export async function getFeatures() {
+  const { data } = await api.get<FeaturesResponse>("/license/features");
+  return data;
+}
+
+/** Error shape returned by backend when a feature is gated. */
+export interface FeatureGatedError {
+  code: "feature_gated";
+  message: string;
+  feature: string;
+  required_plan: PlanTier;
+  current_plan: PlanTier;
+}
+
+export function isFeatureGatedError(e: unknown): e is { error: FeatureGatedError } {
+  if (typeof e !== "object" || e === null) return false;
+  const err = (e as { error?: unknown }).error;
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: string }).code === "feature_gated"
+  );
+}
+
+// ── SSO Providers ────────────────────────────────────────────────────────────
+
+export type SsoKind = "keycloak" | "okta" | "google" | "github" | "microsoft" | "oidc_generic";
+
+export interface SsoProvider {
+  id: string;
+  tenant_id: string;
+  kind: SsoKind;
+  display_name: string;
+  slug: string;
+  client_id: string;
+  issuer_url: string | null;
+  authorize_url: string | null;
+  token_url: string | null;
+  userinfo_url: string | null;
+  jwks_url: string | null;
+  scopes: string;
+  default_role: string | null;
+  auto_provision: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateSsoProviderInput {
+  kind: SsoKind;
+  display_name: string;
+  slug: string;
+  client_id: string;
+  client_secret: string;
+  issuer_url?: string;
+  authorize_url?: string;
+  token_url?: string;
+  userinfo_url?: string;
+  jwks_url?: string;
+  scopes?: string;
+  default_role?: string;
+  auto_provision?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export async function listSsoProviders() {
+  const { data } = await api.get<SsoProvider[]>("/sso/providers");
+  return data;
+}
+
+export async function createSsoProvider(input: CreateSsoProviderInput) {
+  const { data } = await api.post<{ id: string; slug: string; kind: string; display_name: string }>(
+    "/sso/providers",
+    input,
+  );
+  return data;
+}
+
+export async function deleteSsoProvider(id: string) {
+  await api.delete(`/sso/providers/${id}`);
+}
+
+/**
+ * Build the public SSO authorize redirect URL.
+ * The backend is unauthenticated at this route and handles tenant lookup via query.
+ */
+export function ssoAuthorizeUrl(slug: string, tenantSlug: string, redirectAfter?: string) {
+  const params = new URLSearchParams({ tenant: tenantSlug });
+  if (redirectAfter) params.set("redirect_after", redirectAfter);
+  return `${BASE_URL}/auth/sso/${encodeURIComponent(slug)}/authorize?${params.toString()}`;
+}
+
+// ── Feedback ─────────────────────────────────────────────────────────────────
+
+export interface LlmFeedback {
+  id: string;
+  tenant_id: string;
+  user_id: string | null;
+  llm_log_id: string | null;
+  request_id: string | null;
+  rating: -1 | 0 | 1;
+  comment: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface SubmitFeedbackInput {
+  llm_log_id?: string;
+  request_id?: string;
+  rating: -1 | 0 | 1;
+  comment?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export async function submitFeedback(input: SubmitFeedbackInput) {
+  const { data } = await api.post<{ id: string }>("/feedback", input);
+  return data;
+}
+
+export async function listFeedback(limit = 50) {
+  const { data } = await api.get<LlmFeedback[]>("/feedback", { params: { limit } });
+  return data;
+}
+
+export interface FeedbackStats {
+  total: number;
+  positive: number;
+  negative: number;
+  positive_ratio: number;
+  window_days: number;
+}
+
+export async function getFeedbackStats(days = 30) {
+  const { data } = await api.get<FeedbackStats>("/feedback/stats", { params: { days } });
+  return data;
+}
+
+// ── Organizations (SuperAdmin) ───────────────────────────────────────────────
+
+export interface Organization {
+  id: string;
+  slug: string;
+  name: string;
+  plan: string;
+  metadata: Record<string, unknown>;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateOrganizationInput {
+  slug: string;
+  name: string;
+  plan?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export async function listOrganizations() {
+  const { data } = await api.get<Organization[]>("/organizations");
+  return data;
+}
+
+export async function createOrganization(input: CreateOrganizationInput) {
+  const { data } = await api.post<Organization>("/organizations", input);
+  return data;
+}
+
+export async function getOrganization(id: string) {
+  const { data } = await api.get<Organization>(`/organizations/${id}`);
+  return data;
+}
+
+export async function deleteOrganization(id: string) {
+  await api.delete(`/organizations/${id}`);
+}
+
+export async function listOrganizationTenants(id: string) {
+  const { data } = await api.get<string[]>(`/organizations/${id}/tenants`);
+  return data;
+}
+
+export async function assignTenantToOrganization(orgId: string, tenantId: string) {
+  await api.post(`/organizations/${orgId}/tenants/${tenantId}`);
+}

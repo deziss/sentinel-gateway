@@ -12,6 +12,26 @@ export interface UserInfo {
   role: string
 }
 
+export type Role = "super_admin" | "tenant_admin" | "user" | "read_only"
+
+const RANK: Record<Role, number> = {
+  read_only: 0,
+  user: 1,
+  tenant_admin: 2,
+  super_admin: 3,
+}
+
+export function isRole(r: string | undefined | null, min: Role): boolean {
+  if (!r) return false
+  const have = RANK[r as Role]
+  if (have == null) return false
+  return have >= RANK[min]
+}
+
+export const useRole = () => useAuth((s) => (s.user?.role ?? null) as Role | null)
+export const useIsSuperAdmin = () => useAuth((s) => isRole(s.user?.role, "super_admin"))
+export const useIsTenantAdmin = () => useAuth((s) => isRole(s.user?.role, "tenant_admin"))
+
 interface AuthState {
   accessToken: string | null
   refreshToken: string | null

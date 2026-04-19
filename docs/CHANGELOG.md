@@ -2,6 +2,112 @@
 
 All notable changes. Semver once we tag `v1.0.0`.
 
+## [1.2.0] — 2026-04-18
+
+Commercial plan tiers + SSO + feedback + organizations + data-lake exports.
+
+### Added — Plan tiers (Open Source / Professional / Enterprise)
+
+- **Three-tier feature matrix** (`gateway-license/src/features.rs`) — exactly matches the published pricing matrix:
+  - `Plan::Community` (OSS, self-hosted, unlimited) — core gateway routing only: Universal API, Fallbacks, Loadbalancing, Conditional Routing, Retries, Timeouts. Everything else off.
+  - `Plan::Professional` (100K req/month, 30-day retention) — full observability (except FinOps), simple + semantic cache, prompt management (unlimited templates + versioning + playground), deterministic/partner guardrails + PII redaction, RBAC, team management.
+  - `Plan::Enterprise` (unlimited, custom retention) — everything Pro + FinOps dashboard, SSO (Okta/Keycloak/Google/GitHub/Microsoft), audit logs, SCIM, JWT auth, BYOK, datalake exports, org management, compliance (SOC2/GDPR/BAA), VPC/private tenancy.
+- **`Feature` enum + `min_plan()` + `Plan::meets()`** — single source of truth for gating decisions, 30+ named features.
+- **`GET /api/v1/license/features`** — returns full flag set; frontend drives upsell UI from this.
+- **Feature-gate helper** (`gateway-server/src/handlers/feature_gate.rs`) — `require_feature(&state, Feature::X).await?` returns `402 Payment Required` with `{error: {code: "feature_gated", feature, required_plan, current_plan}}`.
+- **Gated handlers** — Feedback, SSO (authorize/callback + CRUD), Organizations enforce their feature flags.
+
+### Added — SSO (OAuth2 / OIDC, Enterprise-gated)
+
+- **5 providers** (`gateway-auth/src/sso.rs`) — Keycloak, Okta, Google, GitHub, Microsoft Entra. Shared `OidcProvider` + dedicated `GithubProvider` (non-OIDC).
+- **Migration 019** — `sso_providers`, `sso_identities`, `sso_auth_states` (CSRF + PKCE verifier storage).
+- **Public endpoints** — `GET /auth/sso/:slug/authorize` + `GET /auth/sso/:slug/callback` with PKCE S256, single-use state (atomic DELETE RETURNING), nonce, auto-provisioning.
+- **Admin endpoints** (TenantAdmin+) — `GET/POST /sso/providers`, `DELETE /sso/providers/:id`.
+- Audit logging on every SSO login + provider config change.
+
+### Added — LLM Feedback (Pro-gated)
+
+- **Migration 020** — `llm_feedback` (rating ∈ {-1, 0, 1}, comment, JSONB metadata, indexed by tenant + log_id + request_id).
+- **3 endpoints** — `POST /feedback` (submit), `GET /feedback` (list), `GET /feedback/stats` (aggregate positive/negative/ratio over N days).
+- Keyed to either `llm_log_id` or externally-supplied `request_id`.
+
+### Added — Organizations (Enterprise-gated)
+
+- **Migration 020** — `organizations` (tenant-of-tenants) + `tenants.organization_id` FK. Enables parent-child grouping for billing, cross-tenant views, and enterprise accounts with multiple environments.
+- **6 endpoints** — CRUD + tenant assignment + tenant listing.
+
+### Added — Plugin framework
+
+- **New crate `gateway-plugin`** — trait-based request/response lifecycle hooks:
+  - `Plugin` trait with `before_request` / `after_response` / `on_error`.
+  - 5 plugin kinds: Input, Output, Guardrail, Observer, Auth. Ordered pipelines (kind → priority → name).
+  - `PluginDecision::{Continue, Modified, Block, Respond}` — terminal decisions short-circuit the pipeline.
+  - `PluginContext` with free-form metadata bag for inter-plugin state sharing.
+  - `PluginRegistry` with hot-swap (`register` / `unregister`), disabled-plugin skipping, error isolation (errored plugins don't halt the pipeline).
+
+### Added — Virtual keys activation (P0)
+
+- **3rd auth method** — `vk_*` prefix routes to virtual-key authentication alongside JWT + `sg_*` API keys.
+- `AuthMethod::VirtualKey { vkey_id, backend_id, team_id, allowed_models, rate_limit_rpm, budget_daily, budget_monthly }`.
+- Per-key pinning to a backend + per-key rate/budget policy.
+- Fire-and-forget `touch_used()` updates `last_used_at`.
+
+### Added — Write-behind LLM logging
+
+- **`gateway-audit/src/llm_log_service.rs`** — async mpsc-buffered batch-insert (200 entries or 2s flush). Drops silently on overflow rather than blocking the LLM request path.
+- All successful LLM requests captured with redacted request + response for search/replay.
+
+### Added — Per-tenant pricing overrides
+
+- `CostCalculator::calculate_with_override()` — applies per-model input/output price overrides + markup multiplier.
+- `tenant_pricing` repo wired into LLM handler; falls back to default table when no override.
+
+### Added — Simple cache + privacy mode
+
+- **Per-tenant scoped cache** (`gateway-llm/src/privacy.rs::tenant_cache_key`) — namespaces fingerprint with `tenant_id:` so tenant A can't read tenant B's cache.
+- **Privacy mode** — `privacy_mode=true` setting redacts message content (request + response) in observability exports and DB logs while preserving role, tokens, cost, and other metadata.
+- Gated by tenant setting `llm_cache_enabled`.
+
+### Added — Data-lake exports (Enterprise-gated)
+
+- **`gateway-audit/src/data_lake.rs`** — NDJSON spooler supporting 3 destinations:
+  - `file://` — local directory with date partitioning (`dir/YYYY-MM-DD/`)
+  - `s3://bucket/prefix/` — uploads via `aws s3 cp`
+  - `gs://bucket/prefix/` — uploads via `gsutil cp`
+- 5-minute rotation default (configurable via `DATA_LAKE_ROTATE_SECS`).
+- Bounded 100K in-memory queue; drops silently when full (non-blocking).
+
+### Added — Retention worker
+
+- `spawn_retention_worker` — daily cleanup deletes `llm_logs` older than per-tenant `llm_log_retention_days` setting, fallback to `LLM_LOG_RETENTION_DAYS` env (default 90).
+
+### Added — Frontend pages + plan-aware UI
+
+- **`/feedback`** — feedback stats + list (thumbs up/down/ratio over configurable window).
+- **`/sso-providers`** — SSO provider CRUD for 5 OAuth2 providers.
+- **`/organizations`** — organization CRUD (SuperAdmin).
+- **`/billing`** — full feature matrix with plan cards, upgrade CTAs.
+- **`<PlanBadge>`** — current plan badge in header.
+- **`<FeatureGate>`** — upsell component for gated features.
+- **`usePlan()` hook** — caches `/license/features` for 5 min; `has(flag)` + `meets(tier)` helpers.
+- Sidebar nav auto-hides gated items based on current plan.
+
+### Added — Tests
+
+- Backend: **204 tests** (up from 138) — plugin framework (registry ordering, Block/Respond/Continue flow, disabled-plugin skipping, error isolation), privacy redaction (chat/completions/embeddings/multimodal), `cost::calculate_with_override` (overrides + markup + clamping + partial override fallback), SSO (PKCE determinism, provider defaults, authorize URL shape, GitHub non-OIDC exemption), updated `Feature` / `Plan::meets` consistency check across all 28 features.
+- Frontend: **58 tests** (up from 0) — vitest + @testing-library/react + jsdom. Covers: fp-validate, api helpers (token store + error mapping + SSO URL builder), JWT decode, Feedback/Organizations page smoke tests, FeatureGate gating behavior (community/pro/enterprise), `planMeets` tier logic.
+
+### Fixed
+
+- **Migration 018 + 019** — replaced Rust-style `///` doc comments with SQL `--` comments (PostgreSQL rejected the `///` tokens).
+- **Frontend Docker build** — excluded test files from `tsconfig.app.json` production build so test-only types aren't required for the Nginx image.
+
+### Changed
+
+- **`FeatureFlags::for_plan(Plan::Community)`** — removed overly-generous OSS defaults. Community tier is now strictly core gateway routing; observability, prompts, guardrails, webhooks, IP filtering, and budget enforcement moved to Pro+ (as per published matrix).
+- **Community monthly quota** — unlimited (self-hosted). **Pro** — 100K/month. **Enterprise** — custom.
+- **Retention** — Community: 0 (no-op), Pro: 30 days, Enterprise: unlimited/custom.
+
 ## [Unreleased]
 
 ### Added — P2 moat features

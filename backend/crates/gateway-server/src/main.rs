@@ -64,6 +64,15 @@ enum Command {
         #[arg(long, default_value = "keys")]
         output_dir: String,
     },
+    /// Reset a user's password
+    ResetPassword {
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long, default_value = "default")]
+        tenant_slug: String,
+    },
 }
 
 #[tokio::main]
@@ -97,6 +106,9 @@ async fn main() -> Result<()> {
         }
         Command::GenerateKeys { output_dir } => {
             cmd_generate_keys(&output_dir)
+        }
+        Command::ResetPassword { email, password, tenant_slug } => {
+            cmd_reset_password(&cfg, &email, &password, &tenant_slug).await
         }
     };
 
@@ -148,6 +160,30 @@ async fn cmd_create_admin(
         Err(e) => error!("Failed to create user: {e}"),
     }
 
+    Ok(())
+}
+
+async fn cmd_reset_password(
+    cfg: &config::AppConfig,
+    email: &str,
+    password: &str,
+    tenant_slug: &str,
+) -> Result<()> {
+    info!("Resetting password for user: {email} in tenant: {tenant_slug}");
+    let pool = create_pool(&cfg.database.url, cfg.database.max_connections).await?;
+    let tenant_repo = TenantRepository::new(pool.clone());
+    let user_repo = UserRepository::new(pool.clone());
+
+    let tenant = tenant_repo.find_by_slug(tenant_slug).await
+        .map_err(|e| anyhow::anyhow!("Tenant {tenant_slug} not found: {e}"))?;
+
+    let user = user_repo.find_by_email(email, tenant.id).await
+        .map_err(|e| anyhow::anyhow!("User {email} not found: {e}"))?;
+
+    let password_hash = PasswordService::hash(password)?;
+    user_repo.update_password(user.id, password_hash).await?;
+
+    info!("Password reset successfully for {email}!");
     Ok(())
 }
 
@@ -510,10 +546,31 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
 
     let rate_limiter = if let Some(redis_url) = &cfg.redis.url {
         info!("Initializing Redis rate limiter: {redis_url}");
-        let client = fred::clients::RedisClient::default();
+        // Parse the configured URL. Previously this was a silent no-op — the
+        // default client connects to 127.0.0.1:6379 regardless of env var, so
+        // every rate-limited request (e.g., /auth/login) hung forever in a
+        // reconnect loop when the user-supplied URL pointed elsewhere.
+        let config = fred::types::RedisConfig::from_url(redis_url)
+            .map_err(|e| anyhow::anyhow!("Invalid REDIS URL {redis_url}: {e}"))?;
+        let client = fred::clients::RedisClient::new(config, None, None, None);
         let _ = client.connect();
-        let _ = client.wait_for_connect().await;
-        Arc::new(RateLimiter::new_redis(client))
+        // Bounded wait — if Redis is truly unreachable we don't want startup
+        // to block forever. After 5s we fall back to in-memory (with a warning)
+        // rather than leaving the gateway in a half-initialized state.
+        match tokio::time::timeout(Duration::from_secs(5), client.wait_for_connect()).await {
+            Ok(Ok(())) => {
+                info!("Connected to Redis at {redis_url}");
+                Arc::new(RateLimiter::new_redis(client))
+            }
+            Ok(Err(e)) => {
+                warn!("Redis connection failed ({e}); falling back to in-memory rate limiter");
+                Arc::new(RateLimiter::new_in_memory())
+            }
+            Err(_) => {
+                warn!("Redis connect timed out after 5s; falling back to in-memory rate limiter");
+                Arc::new(RateLimiter::new_in_memory())
+            }
+        }
     } else if replicas > 1 {
         // Fatal config error: multi-replica without Redis = inconsistent rate limits
         error!(
@@ -589,6 +646,33 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
     let webhook_failure_repo = Arc::new(WebhookFailureRepository::new(pool.clone()));
     let prompt_repo = Arc::new(PromptRepository::new(pool.clone()));
     let guardrail_rule_repo = Arc::new(GuardrailRuleRepository::new(pool.clone()));
+    // P0 feature-parity additions
+    let team_repo = Arc::new(gateway_db::repository::TeamRepository::new(pool.clone()));
+    let virtual_key_repo = Arc::new(gateway_db::repository::VirtualKeyRepository::new(pool.clone()));
+    let llm_log_repo = Arc::new(gateway_db::repository::LlmLogRepository::new(pool.clone()));
+    let tenant_pricing_repo = Arc::new(gateway_db::repository::TenantPricingRepository::new(pool.clone()));
+    // SSO
+    let sso_provider_repo = Arc::new(gateway_db::repository::SsoProviderRepository::new(pool.clone()));
+    let sso_identity_repo = Arc::new(gateway_db::repository::SsoIdentityRepository::new(pool.clone()));
+    let sso_auth_state_repo = Arc::new(gateway_db::repository::SsoAuthStateRepository::new(pool.clone()));
+    let organization_repo = Arc::new(gateway_db::repository::OrganizationRepository::new(pool.clone()));
+    let llm_feedback_repo = Arc::new(gateway_db::repository::LlmFeedbackRepository::new(pool.clone()));
+    // Async write-behind LLM log service (batch=200, flush every 2s)
+    let llm_log_service = gateway_audit::LlmLogService::start(llm_log_repo.clone(), 200, 2000);
+    // Data-lake exporter (S3 / GCS / file) — no-op if DATA_LAKE_DESTINATION unset
+    let data_lake = gateway_audit::DataLakeExporter::start(gateway_audit::DataLakeConfig::from_env());
+    // Retention worker (runs every 24h; default 90 days unless LLM_LOG_RETENTION_DAYS env set)
+    let default_retention_days = std::env::var("LLM_LOG_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(90);
+    gateway_audit::data_lake::spawn_retention_worker(
+        llm_log_repo.clone(),
+        setting_repo.clone(),
+        tenant_repo.clone(),
+        default_retention_days,
+        24,
+    );
 
     // ── Observability Export (optional) ────────────────────────────────────
     let observability_exporter = observability_export::ObservabilityExporter::start(
@@ -611,6 +695,8 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
     ));
 
     let llm_router = Arc::new(gateway_llm::LlmRouter::new());
+    // Simple non-semantic LLM response cache (exact-fingerprint; 1-day default)
+    let llm_cache = Arc::new(gateway_llm::SemanticCache::new(86_400, 10_000));
 
     // ── MCP Server ─────────────────────────────────────────────────────────
     let mcp_registry = Arc::new(gateway_mcp::McpRegistry::default());
@@ -647,9 +733,21 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         webhook_failure_repo: webhook_failure_repo.clone(),
         usage_record_repo,
         llm_router,
+        llm_cache,
         mcp_server,
         prompt_repo,
         guardrail_rule_repo,
+        team_repo,
+        virtual_key_repo,
+        llm_log_repo,
+        tenant_pricing_repo,
+        llm_log_service,
+        sso_provider_repo,
+        sso_identity_repo,
+        sso_auth_state_repo,
+        organization_repo,
+        llm_feedback_repo,
+        data_lake,
         observability_exporter,
     });
 

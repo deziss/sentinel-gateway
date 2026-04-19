@@ -61,6 +61,11 @@ pub struct HeliconeConfig {
 fn default_helicone_url() -> String { "https://api.helicone.ai".to_string() }
 
 /// One LLM request/response to export.
+///
+/// `prompt_tokens` / `completion_tokens` are populated by the LLM handler and
+/// serialized into the Langfuse / Helicone payloads inside the exporter task;
+/// rustc's dead-code pass can't see through the JSON serialization, so allow.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct TraceEvent {
     pub trace_id: String,

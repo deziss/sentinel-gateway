@@ -185,6 +185,10 @@ pub async fn get(
     }
 }
 
+// `credentials` and `priority` are part of the documented PATCH shape but
+// the current handler only wires `is_active` to the repo. Keep the fields
+// for API stability + future use; silence dead-code for now.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateBackendRequest {
     #[validate(length(min = 1, max = 255))]

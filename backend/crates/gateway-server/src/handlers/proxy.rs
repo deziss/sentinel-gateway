@@ -46,6 +46,13 @@ pub async fn proxy_handler(
                     None => (Some(*key_id), Some(ctx.user_id), Some(60), None, None),
                 }
             }
+            AuthMethod::VirtualKey { vkey_id: _, rate_limit_rpm, budget_daily, budget_monthly, .. } => (
+                None,
+                Some(ctx.user_id),
+                *rate_limit_rpm,
+                *budget_daily,
+                *budget_monthly,
+            ),
             AuthMethod::Jwt { .. } => (None, Some(ctx.user_id), Some(60), None, None),
         },
         None => (None, None, Some(10), Some(0.0), Some(0.0)),

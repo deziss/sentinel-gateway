@@ -9,6 +9,10 @@ use crate::error::AuthError;
 pub struct PasswordService {
     rate_limiter: Arc<RateLimiter>,
     max_attempts: u32,
+    // The lockout window itself is enforced by the DB (`users.locked_until`),
+    // not this service. Kept in the constructor for API stability and future
+    // use in verify_with_lockout's backoff heuristics.
+    #[allow(dead_code)]
     lockout_duration_mins: u32,
 }
 

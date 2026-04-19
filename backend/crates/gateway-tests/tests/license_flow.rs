@@ -10,21 +10,35 @@ use gateway_license::{
 #[test]
 fn community_plan_has_generous_limits() {
     let f = FeatureFlags::for_plan(Plan::Community);
+    // OSS self-hosted: unlimited users, backends, requests.
     assert_eq!(f.max_backends, u32::MAX);
     assert_eq!(f.max_users, u32::MAX);
-    assert!(f.graphql_enabled);
+    assert_eq!(f.max_requests_per_month, u64::MAX);
+    // But paid features are gated off.
     assert!(!f.grpc_enabled);
     assert!(!f.sso_enabled);
     assert!(!f.multi_tenant);
+    assert!(!f.logs_enabled);
+    assert!(!f.prompt_templates_enabled);
 }
 
 #[test]
-fn professional_plan_enables_sso_and_multi_tenant() {
+fn professional_plan_enables_observability_and_guardrails() {
     let f = FeatureFlags::for_plan(Plan::Professional);
-    assert!(f.sso_enabled);
+    // Pro: observability, prompts, guardrails, RBAC, teams.
+    assert!(f.logs_enabled);
+    assert!(f.feedback_enabled);
+    assert!(f.prompt_templates_enabled);
+    assert!(f.pii_redaction_enabled);
+    assert!(f.rbac_enabled);
+    assert!(f.team_management);
     assert!(f.multi_tenant);
-    assert!(!f.grpc_enabled);
-    assert_eq!(f.max_backends, 20);
+    // Pro still lacks Enterprise-only features.
+    assert!(!f.sso_enabled);
+    assert!(!f.audit_logs_enabled);
+    assert!(!f.org_management_enabled);
+    // 100K/month request cap.
+    assert_eq!(f.max_requests_per_month, 100_000);
 }
 
 #[test]
@@ -48,10 +62,13 @@ fn plan_from_str_is_case_insensitive() {
 }
 
 #[test]
-fn audit_retention_scales_with_plan() {
-    assert_eq!(FeatureFlags::for_plan(Plan::Community).audit_log_retention_days, 30);
-    assert_eq!(FeatureFlags::for_plan(Plan::Professional).audit_log_retention_days, 90);
-    assert_eq!(FeatureFlags::for_plan(Plan::Enterprise).audit_log_retention_days, 365);
+fn retention_scales_with_plan() {
+    // Community: no retention (OSS; customer runs their own DB).
+    assert_eq!(FeatureFlags::for_plan(Plan::Community).retention_days, 0);
+    // Pro: fixed 30 days.
+    assert_eq!(FeatureFlags::for_plan(Plan::Professional).retention_days, 30);
+    // Enterprise: unlimited / custom.
+    assert_eq!(FeatureFlags::for_plan(Plan::Enterprise).retention_days, u32::MAX);
 }
 
 // ── Hardware Fingerprint ───────────────────────────────────────────────────

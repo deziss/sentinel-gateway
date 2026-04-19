@@ -75,6 +75,10 @@ impl TenantRepository {
         Ok(tenants)
     }
 
+    // `bind_idx` is incremented after the last push_set — rustc flags the
+    // final write as unused since no read follows, but removing it would
+    // break the macro's invariant if more push_set! invocations are added.
+    #[allow(unused_assignments)]
     pub async fn update(&self, id: Uuid, input: UpdateTenant) -> DbResult<Tenant> {
         // Build dynamic SET clause from non-None fields
         let mut sets = vec!["updated_at = NOW()".to_string()];
