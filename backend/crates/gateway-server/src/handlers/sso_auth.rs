@@ -94,11 +94,12 @@ pub async fn authorize(
     Path(slug): Path<String>,
     Query(q): Query<AuthorizeQuery>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Sso).await { return resp; }
     let tenant = match state.tenant_repo.find_by_slug(&q.tenant).await {
         Ok(t) => t,
         Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"error": "tenant not found"}))).into_response(),
     };
+
+    if let Err(resp) = crate::handlers::feature_gate::require_feature_for_tenant(&state, Some(tenant.id), Feature::Sso).await { return resp; }
 
     let provider = match state.sso_provider_repo.find_by_slug(tenant.id, &slug).await {
         Ok(p) => p,
@@ -154,7 +155,6 @@ pub async fn callback(
     Path(slug): Path<String>,
     Query(q): Query<CallbackQuery>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Sso).await { return resp; }
     if let Some(err) = q.error {
         let desc = q.error_description.unwrap_or_default();
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": err, "description": desc}))).into_response();
@@ -180,6 +180,8 @@ pub async fn callback(
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"error": "provider gone"}))).into_response(),
     };
+
+    if let Err(resp) = crate::handlers::feature_gate::require_feature_for_tenant(&state, Some(provider.tenant_id), Feature::Sso).await { return resp; }
 
     let redirect_uri = redirect_uri_for(&state, &slug);
 
@@ -326,7 +328,7 @@ pub async fn list_providers(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<RequireAuth>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Sso).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::Sso).await { return resp; }
     match state.sso_provider_repo.list_by_tenant(auth.0.tenant_id).await {
         Ok(ps) => (StatusCode::OK, Json(ps)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
@@ -364,7 +366,7 @@ pub async fn create_provider(
     Extension(auth): Extension<RequireAuth>,
     Json(body): Json<CreateProviderRequest>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Sso).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::Sso).await { return resp; }
     if ProviderKind::from_str(&body.kind).is_none() {
         return (
             StatusCode::BAD_REQUEST,
@@ -423,7 +425,7 @@ pub async fn delete_provider(
     Extension(auth): Extension<RequireAuth>,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Sso).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::Sso).await { return resp; }
     match state.sso_provider_repo.delete(id, auth.0.tenant_id).await {
         Ok(()) => {
             state.audit_service.log(

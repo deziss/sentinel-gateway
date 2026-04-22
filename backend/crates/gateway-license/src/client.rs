@@ -1,4 +1,5 @@
 use reqwest::Client;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -131,4 +132,45 @@ impl LicenciaClient {
             .map(|r| r.status().is_success())
             .unwrap_or(false)
     }
+
+    /// Report usage metrics for a specific license/tenant.
+    pub async fn report_usage(&self, request: UsageReportRequest) -> Result<(), LicenseError> {
+        let url = format!("{}/usage/report", self.base_url);
+
+        let mut req = self.http.post(&url).json(&request);
+        if let Some(ref key) = self.api_key {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+
+        let resp = req.send().await
+            .map_err(|e| LicenseError::Internal(format!("License server unreachable: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            warn!(status = %status, "Usage report failed: {body}");
+            return Err(LicenseError::Internal(format!("Usage report failed with {status}")));
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UsageReportRequest {
+    pub license_key: String,
+    pub tenant_id: String,
+    pub records: Vec<UsageRecordPayload>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UsageRecordPayload {
+    pub model: String,
+    pub provider: String,
+    pub total_requests: i64,
+    pub total_tokens_input: i64,
+    pub total_tokens_output: i64,
+    pub total_cost: f64,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
 }

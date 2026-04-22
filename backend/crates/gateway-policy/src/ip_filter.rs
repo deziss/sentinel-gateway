@@ -39,14 +39,14 @@ impl IpFilter {
     pub fn tenant_deny(&self, tenant_id: Uuid, ip: &str) {
         self.tenant_denylists
             .entry(tenant_id)
-            .or_insert_with(DashSet::new)
+            .or_default()
             .insert(ip.to_owned());
     }
 
     pub fn tenant_allow(&self, tenant_id: Uuid, ip: &str) {
         self.tenant_allowlists
             .entry(tenant_id)
-            .or_insert_with(DashSet::new)
+            .or_default()
             .insert(ip.to_owned());
     }
 

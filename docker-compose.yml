@@ -6,6 +6,7 @@
 services:
   # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
   db:
+    container_name: sentinel-db
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: sentinel
@@ -24,9 +25,10 @@ services:
   # ── Redis 7 ────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
+    container_name: sentinel-redis
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     ports:
-      - "6380:6379"
+      - "6381:6379"
     volumes:
       - sentinel_redis_data:/data
     healthcheck:
@@ -35,15 +37,42 @@ services:
       timeout: 5s
       retries: 5
 
+  # pgbouncer:
+  #   image: edoburu/pgbouncer:v1.25.1-p0
+  #   environment:
+  #     DATABASE_URL: postgres://sentinel:sentinel_password@db:5432/sentinel_gateway
+  #     POOL_MODE: transaction
+  #     DEFAULT_POOL_SIZE: "20"
+  #     MAX_CLIENT_CONN: "100"
+  #     MAX_DB_CONNECTIONS: "25"
+  #     LISTEN_PORT: 6432
+  #   ports:
+  #   - "6432:6432"
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -h localhost -p 6432"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+  #   restart: unless-stopped
+
   # ── Database Migrations (one-shot) ─────────────────────────────────────────
   migrator:
+    container_name: sentinel-migrator
     build:
       context: ./backend
       dockerfile: Dockerfile
     environment:
+      # Migrations connect directly to Postgres (DDL requires superuser session,
+      # incompatible with PgBouncer transaction mode).
       GATEWAY__DATABASE__URL: postgres://sentinel:sentinel_password@db:5432/sentinel_gateway
-      GATEWAY__SERVER__DEPLOYMENT_MODE: local
+      GATEWAY__SERVER__DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-platform}
       GATEWAY__SERVER__SAAS_MODE: "true"
+      GATEWAY__LICENSE__LICENSE_KEY: ${LICENSE_KEY}
+      GATEWAY__PLATFORM__URL: ${LICENCIA_URL}
+      GATEWAY__PLATFORM__API_KEY: ${LICENCIA_API_KEY}
     volumes:
       - ./backend/keys:/app/keys:ro
       - ./backend/config:/app/config:ro
@@ -55,6 +84,7 @@ services:
 
   # ── RSA Key Generator (one-shot) ───────────────────────────────────────────
   keygen:
+    container_name: sentinel-keygen
     image: alpine:3.20
     entrypoint: /bin/sh
     command:
@@ -74,22 +104,30 @@ services:
 
   # ── Backend (Rust/Axum Gateway Server) ─────────────────────────────────────
   backend:
+    container_name: sentinel-backend
     build:
       context: ./backend
       dockerfile: Dockerfile
     environment:
+      # Route through PgBouncer (transaction mode) for connection pooling.
       GATEWAY__DATABASE__URL: postgres://sentinel:sentinel_password@db:5432/sentinel_gateway
-      GATEWAY__REDIS__URL: redis://redis:6379
+      GATEWAY__REDIS__URL: ${REDIS_URL:-redis://redis:6379}
       GATEWAY__SERVER__HOST: 0.0.0.0
       GATEWAY__SERVER__PORT: "8080"
       GATEWAY__SERVER__SAAS_MODE: "true"
-      GATEWAY__SERVER__DEPLOYMENT_MODE: local
+      GATEWAY__SERVER__DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-platform}
+      GATEWAY__SERVER__ENCRYPTION_KEY: cd53efd498131882d34b15f1771030440f03e54d643de7714976b72827c877f7
+      GATEWAY__SERVER__CORS_ALLOW_ALL: "false"
+      GATEWAY__SERVER__CORS_ORIGINS: "http://localhost:3000,http://localhost:3005"
+      GATEWAY__LICENSE__LICENSE_KEY: ${LICENSE_KEY}
+      GATEWAY__PLATFORM__URL: ${LICENCIA_URL}
+      GATEWAY__PLATFORM__API_KEY: ${LICENCIA_API_KEY}
       GATEWAY__AUTH__JWT_PRIVATE_KEY_PATH: /app/keys/private.pem
       GATEWAY__AUTH__JWT_PUBLIC_KEY_PATH: /app/keys/public.pem
       GATEWAY__TELEMETRY__LOG_LEVEL: info
       GATEWAY__TELEMETRY__SERVICE_NAME: sentinel-gateway
       GATEWAY__TELEMETRY__PROMETHEUS_ENABLED: "true"
-      GATEWAY__TELEMETRY__OTLP_ENDPOINT: http://otel-collector:4317
+      GATEWAY__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://otel-collector:4317}
     ports:
       - "8080:8080"
     volumes:
@@ -100,6 +138,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+        required: false
       migrator:
         condition: service_completed_successfully
       keygen:
@@ -114,6 +153,7 @@ services:
 
   # ── Frontend (React + Nginx) ───────────────────────────────────────────────
   frontend:
+    container_name: sentinel-frontend
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -127,15 +167,17 @@ services:
 
   # ── OpenTelemetry Collector ────────────────────────────────────────────────
   otel-collector:
+    container_name: sentinel-otel-collector
     image: otel/opentelemetry-collector-contrib:0.116.0
+    profiles: ["${ENABLE_OTEL:-default}"]
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./deploy/docker/otel-collector.yaml:/etc/otelcol/config.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8888:8888"   # Prometheus metrics
-      - "8889:8889"   # Prometheus exporter
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+      - "8888:8888"     # Prometheus metrics
+      - "8889:8889"     # Prometheus exporter
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
       interval: 10s
@@ -145,3 +187,6 @@ services:
 volumes:
   sentinel_pg_data:
   sentinel_redis_data:
+networks:
+  default:
+    name: sentinel_gateway_net

@@ -98,6 +98,7 @@ impl AuditLogRepository {
     /// Cursor-based pagination: fetch rows created before `cursor_ts`.
     /// If both cursor_ts and cursor_id provided, use them as a composite cursor for tie-breaking.
     /// Avoids OFFSET scan. Returns rows in (created_at DESC, id DESC) order.
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_by_tenant_cursor(
         &self,
         tenant_id: Uuid,

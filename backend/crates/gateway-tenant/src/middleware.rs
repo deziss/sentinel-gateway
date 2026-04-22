@@ -57,11 +57,12 @@ pub async fn tenant_middleware(
                 .insert(TenantContext::new(tenant, state.saas_mode));
             next.run(req).await
         }
-        Err(TenantError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "Tenant not found" })),
-        )
-            .into_response(),
+        // Pre-auth routes (login, refresh, SSO callback) hit this middleware before any
+        // tenant context exists — they resolve tenant from the request body themselves.
+        // Proceeding without injecting `TenantContext` lets those endpoints run; protected
+        // routes downstream will still be gated by `auth_middleware` / `role_gate`, and
+        // handlers that need tenancy use `auth.0.tenant_id` from the JWT.
+        Err(TenantError::NotFound) => next.run(req).await,
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),

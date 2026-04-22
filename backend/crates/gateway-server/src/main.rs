@@ -9,13 +9,16 @@ use anyhow::Result;
 use axum::Router;
 use clap::{Parser, Subcommand};
 use gateway_db::{create_pool, create_pool_with_options};
-use gateway_license::{ActivationService, DeploymentMode, FeatureFlags, LicenciaClient, Plan};
+use gateway_license::{DeploymentMode, FeatureFlags, Plan};
+#[cfg(feature = "saas")]
+use gateway_license::{ActivationService, LicenciaClient};
 use gateway_policy::{BudgetEnforcer, IpFilter, RateLimiter, PolicyEngine};
 use gateway_core::health::HealthChecker;
 use gateway_telemetry::{Metrics, TelemetryConfig, init_telemetry, shutdown_telemetry};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
+use sha2::Digest;
 use gateway_db::repository::{
     ApiKeyRepository, AuditLogRepository, BackendRepository, RouteRepository,
     SettingRepository, TenantRepository, UsageRecordRepository, UserRepository,
@@ -82,7 +85,7 @@ async fn main() -> Result<()> {
 
     // Initialize telemetry
     init_telemetry(&TelemetryConfig {
-        otlp_endpoint: cfg.telemetry.otlp_endpoint.clone(),
+        otlp_endpoint: cfg.telemetry.otlp_endpoint.clone().filter(|s| !s.trim().is_empty()),
         service_name: cfg.telemetry.service_name.clone(),
         service_version: env!("CARGO_PKG_VERSION").to_string(),
         log_level: cfg.telemetry.log_level.clone(),
@@ -217,7 +220,9 @@ async fn cmd_validate_license(cfg: &config::AppConfig, key: &str) -> Result<()> 
         }
     }
 
-    // Try online validation
+    // Try online validation — only available in saas-enabled builds (the
+    // LicenciaClient and its request types are gated behind `gateway-license/saas`).
+    #[cfg(feature = "saas")]
     if let Some(ref platform_url) = cfg.platform.url {
         info!("Trying online validation against {platform_url}...");
         let client = LicenciaClient::new(platform_url, cfg.platform.api_key.clone());
@@ -241,6 +246,8 @@ async fn cmd_validate_license(cfg: &config::AppConfig, key: &str) -> Result<()> 
             Err(e) => warn!("Online validation failed: {e}"),
         }
     }
+    #[cfg(not(feature = "saas"))]
+    info!("Skipping online validation — compiled without `saas` feature");
 
     error!("License validation FAILED — no valid license found");
     Ok(())
@@ -414,6 +421,7 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
     // ── Determine deployment mode ──────────────────────────────────────────
     let deployment_mode = match cfg.server.deployment_mode.to_lowercase().as_str() {
         "platform" => DeploymentMode::Platform,
+        "paas" => DeploymentMode::PaaS,
         _ => DeploymentMode::Local,
     };
 
@@ -421,73 +429,35 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         DeploymentMode::Local => {
             cfg.server.saas_mode = true;
             cfg.server.default_tenant_slug = Some("local".to_string());
-            info!("Running in Community edition (local mode, offline — all core features enabled)");
+            info!("Running in Community edition (local mode — core features only)");
             FeatureFlags::for_plan(Plan::Community)
         }
+        DeploymentMode::PaaS => {
+            // Validate developer secret
+            let secret = cfg.server.developer_secret.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("GATEWAY__SERVER__DEVELOPER_SECRET is required in PaaS mode"))?;
+            
+            let instance_id = cfg.server.instance_id.as_deref().unwrap_or("default");
+            let expected_input = format!("sentinel-paas:{}", instance_id);
+            let expected_hash = hex::encode(sha2::Sha256::digest(expected_input.as_bytes()));
+            
+            if secret != &expected_hash {
+                error!("Invalid developer secret for instance_id '{}'", instance_id);
+                anyhow::bail!("Invalid GATEWAY__SERVER__DEVELOPER_SECRET");
+            }
+
+            info!("Running in PaaS mode (Developer Bypass — ALL features unlocked)");
+            FeatureFlags::all_unlocked()
+        }
         DeploymentMode::Platform => {
-            let features = if let Some(ref license_key) = cfg.license.license_key {
-                if let Some(ref pk_path) = cfg.license.public_key_path {
-                    match std::fs::read(pk_path) {
-                        Ok(pk) => {
-                            match gateway_license::LicenseValidator::new(&pk, cfg.license.grace_period_days) {
-                                Ok(validator) => match validator.validate(license_key) {
-                                    Ok(f) => {
-                                        info!("Running in Platform mode (plan: {:?})", f.plan);
-                                        f
-                                    }
-                                    Err(e) => {
-                                        warn!("License validation failed: {e}. Falling back to Community.");
-                                        FeatureFlags::for_plan(Plan::Community)
-                                    }
-                                },
-                                Err(e) => {
-                                    warn!("License validator init failed: {e}. Falling back to Community.");
-                                    FeatureFlags::for_plan(Plan::Community)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Cannot read license public key: {e}. Falling back to Community.");
-                            FeatureFlags::for_plan(Plan::Community)
-                        }
-                    }
-                } else {
-                    warn!("License key set but no public key path. Falling back to Community.");
-                    FeatureFlags::for_plan(Plan::Community)
-                }
-            } else {
-                info!("Running in Platform mode (no license — Community plan)");
-                FeatureFlags::for_plan(Plan::Community)
-            };
-            features
+            info!("Running in Platform mode (SaaS — per-tenant licensing)");
+            // In Platform mode, the "instance" plan is typically Enterprise (the operator level)
+            // but the effective plan for requests is resolved per-tenant.
+            FeatureFlags::for_plan(Plan::Enterprise)
         }
     };
 
-    // ── Activation Service ──────────────────────────────────────────────────
-    let licencia_client = cfg.platform.url.as_ref().map(|url| {
-        Arc::new(LicenciaClient::new(url, cfg.platform.api_key.clone()))
-    });
-
-    let offline_validator = if let Some(ref pk_path) = cfg.license.public_key_path {
-        std::fs::read(pk_path).ok().and_then(|pk| {
-            gateway_license::LicenseValidator::new(&pk, cfg.license.grace_period_days).ok().map(Arc::new)
-        })
-    } else {
-        None
-    };
-
-    let activation_service = Arc::new(ActivationService::new(
-        licencia_client,
-        offline_validator,
-        cfg.license.license_key.clone(),
-        cfg.server.instance_id.clone(),
-        cfg.license.grace_period_days,
-    ));
-
-    match activation_service.activate().await {
-        Ok(f) => info!(plan = ?f.plan, "License activation complete"),
-        Err(e) => warn!("License activation failed: {e} — running Community"),
-    }
+    // Licensing services moved below to after repository initialization
 
     // ── Auto-provision local tenant ────────────────────────────────────────
     let tenant_repo = Arc::new(TenantRepository::new(pool.clone()));
@@ -544,7 +514,7 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
 
-    let rate_limiter = if let Some(redis_url) = &cfg.redis.url {
+    let rate_limiter = if let Some(redis_url) = cfg.redis.url.as_ref().filter(|s| !s.trim().is_empty()) {
         info!("Initializing Redis rate limiter: {redis_url}");
         // Parse the configured URL. Previously this was a silent no-op — the
         // default client connects to 127.0.0.1:6379 regardless of env var, so
@@ -553,14 +523,17 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         let config = fred::types::RedisConfig::from_url(redis_url)
             .map_err(|e| anyhow::anyhow!("Invalid REDIS URL {redis_url}: {e}"))?;
         let client = fred::clients::RedisClient::new(config, None, None, None);
-        let _ = client.connect();
+        drop(client.connect());
         // Bounded wait — if Redis is truly unreachable we don't want startup
         // to block forever. After 5s we fall back to in-memory (with a warning)
         // rather than leaving the gateway in a half-initialized state.
         match tokio::time::timeout(Duration::from_secs(5), client.wait_for_connect()).await {
             Ok(Ok(())) => {
                 info!("Connected to Redis at {redis_url}");
-                Arc::new(RateLimiter::new_redis(client))
+                let rl = Arc::new(RateLimiter::new_redis(client));
+                // Pre-load Lua scripts so subsequent calls use EVALSHA (lower bandwidth).
+                rl.preload_scripts().await;
+                rl
             }
             Ok(Err(e)) => {
                 warn!("Redis connection failed ({e}); falling back to in-memory rate limiter");
@@ -584,7 +557,27 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         Arc::new(RateLimiter::new_in_memory())
     };
 
-    let budget_enforcer = Arc::new(BudgetEnforcer::new());
+    // Budget enforcer: Redis-backed when Redis is configured (multi-replica safety),
+    // in-memory otherwise. Must mirror rate-limiter Redis client when possible.
+    let budget_enforcer = if let Some(redis_url) = cfg.redis.url.as_ref().filter(|s| !s.trim().is_empty()) {
+        let config = fred::types::RedisConfig::from_url(redis_url)
+            .map_err(|e| anyhow::anyhow!("Invalid REDIS URL for budget enforcer: {e}"))?;
+        let client = fred::clients::RedisClient::new(config, None, None, None);
+        drop(client.connect());
+        match tokio::time::timeout(Duration::from_secs(5), client.wait_for_connect()).await {
+            Ok(Ok(())) => {
+                info!("Budget enforcer: Redis backend (multi-replica safe)");
+                Arc::new(BudgetEnforcer::new_redis(client))
+            }
+            _ => {
+                warn!("Redis connect failed for budget enforcer; falling back to in-memory");
+                Arc::new(BudgetEnforcer::new())
+            }
+        }
+    } else {
+        warn!("Budget enforcer: in-memory (single-replica only — NOT safe for scale-out)");
+        Arc::new(BudgetEnforcer::new())
+    };
     let ip_filter = Arc::new(IpFilter::new());
     let metrics = Arc::new(Metrics::new());
 
@@ -703,6 +696,47 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
     let mcp_sessions = Arc::new(gateway_mcp::session::SessionStore::new(3600));
     let mcp_server = Arc::new(gateway_mcp::McpServer::new(mcp_registry, mcp_sessions));
 
+    let tenant_license_repo = Arc::new(gateway_db::repository::TenantLicenseRepository::new(pool.clone()));
+
+    // ── Licensing Services ──────────────────────────────────────────────────
+    // Only wired if the 'saas' feature is enabled.
+    #[cfg(feature = "saas")]
+    let (activation_service, tenant_license_service) = {
+        let licencia_client = cfg.license.licencia_url.as_ref().map(|url| {
+            Arc::new(LicenciaClient::new(url, cfg.license.licencia_api_key.clone()))
+        });
+
+        let offline_validator = if let Some(ref pk_path) = cfg.license.public_key_path {
+            std::fs::read(pk_path).ok().and_then(|pk| {
+                gateway_license::LicenseValidator::new(&pk, cfg.license.grace_period_days).ok().map(Arc::new)
+            })
+        } else {
+            None
+        };
+
+        let activation_service = Arc::new(ActivationService::new(
+            licencia_client.clone(),
+            offline_validator,
+            cfg.license.license_key.clone(),
+            cfg.server.instance_id.clone(),
+            cfg.license.grace_period_days,
+        ));
+
+        let tenant_license_service = Arc::new(gateway_license::TenantLicenseService::new(
+            tenant_license_repo.clone(),
+            licencia_client,
+            cfg.redis.url.as_ref().map(|_| rate_limiter.redis_client().unwrap().clone()),
+        ));
+
+        (activation_service, tenant_license_service)
+    };
+
+    #[cfg(feature = "saas")]
+    match activation_service.activate().await {
+        Ok(f) => info!(plan = ?f.plan, "Instance activation complete"),
+        Err(e) => warn!("Instance activation failed: {e} — running Community defaults"),
+    }
+
     // ── Build AppState ─────────────────────────────────────────────────────
     let state = Arc::new(AppState {
         db: pool,
@@ -716,7 +750,7 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         health_checker: health_checker.clone(),
         metrics,
         auth_config: cfg.auth.clone(),
-        deployment_mode,
+        deployment_mode: deployment_mode.clone(),
         server_config: cfg.server.clone(),
         platform_config: cfg.platform.clone(),
         tenant_repo: tenant_repo.clone(),
@@ -728,10 +762,11 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         audit_service,
         tenant_service,
         setting_repo,
+        #[cfg(feature = "saas")]
         activation_service: activation_service.clone(),
         webhook_repo,
         webhook_failure_repo: webhook_failure_repo.clone(),
-        usage_record_repo,
+        usage_record_repo: usage_record_repo.clone(),
         llm_router,
         llm_cache,
         mcp_server,
@@ -747,6 +782,9 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
         sso_auth_state_repo,
         organization_repo,
         llm_feedback_repo,
+        tenant_license_repo: tenant_license_repo.clone(),
+        #[cfg(feature = "saas")]
+        tenant_license_service,
         data_lake,
         observability_exporter,
     });
@@ -766,6 +804,26 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
             tokio::time::sleep(health_interval).await;
         }
     });
+
+    #[cfg(feature = "saas")]
+    if deployment_mode == DeploymentMode::Platform {
+        if let Some(licencia_client) = activation_service.client() {
+            let usage_repo = usage_record_repo.clone();
+            let license_repo = tenant_license_repo.clone();
+            let reporter = gateway_license::UsageReporter::new(usage_repo, license_repo, licencia_client);
+            
+            tokio::spawn(async move {
+                info!("Starting usage metering reporter worker");
+                loop {
+                    // Skip the first sleep to report immediately on startup
+                    if let Err(e) = reporter.report_all().await {
+                        error!("Usage reporting pass failed: {}", e);
+                    }
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                }
+            });
+        }
+    }
 
     // Token blacklist cleanup (every 60s)
     let blacklist_task = token_blacklist.clone();
@@ -804,13 +862,16 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
     });
 
     // License heartbeat (every hour)
-    let heartbeat_svc = activation_service.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-            heartbeat_svc.heartbeat().await;
-        }
-    });
+    #[cfg(feature = "saas")]
+    {
+        let heartbeat_svc = activation_service.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                heartbeat_svc.heartbeat().await;
+            }
+        });
+    }
 
     // Inference metrics scraper — polls /metrics on each active backend at the
     // health-check interval. Only does real work for LbStrategy::InferenceAware,
@@ -901,6 +962,9 @@ async fn serve(mut cfg: config::AppConfig) -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    #[cfg(feature = "saas")]
+    activation_service.deactivate().await;
 
     info!("Server stopped. Flushing telemetry...");
     Ok(())

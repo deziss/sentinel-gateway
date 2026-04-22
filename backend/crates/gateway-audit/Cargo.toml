@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 gateway-db = { path = "../gateway-db" }
+gateway-telemetry = { path = "../gateway-telemetry" }
 axum = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -24,3 +25,5 @@ base64 = { workspace = true }
 rand = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
+prometheus = { workspace = true }
+once_cell = { workspace = true }

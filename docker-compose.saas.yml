@@ -1,0 +1,32 @@
+# =============================================================================
+# Sentinel Gateway — SaaS Production Override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.saas.yml up -d
+# =============================================================================
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        EDITION: saas
+    environment:
+      GATEWAY__SERVER__DEPLOYMENT_MODE: platform
+      GATEWAY__SERVER__SAAS_MODE: "true"
+      # Required for online license validation
+      GATEWAY__PLATFORM__URL: ${LICENCIA_URL:?error}
+      GATEWAY__PLATFORM__API_KEY: ${LICENCIA_API_KEY:?error}
+      # Instance identification
+      GATEWAY__SERVER__INSTANCE_ID: ${INSTANCE_ID}
+
+  migrator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        EDITION: saas
+    environment:
+      GATEWAY__SERVER__DEPLOYMENT_MODE: platform
+      GATEWAY__SERVER__SAAS_MODE: "true"
+      GATEWAY__PLATFORM__URL: ${LICENCIA_URL:?error}
+      GATEWAY__PLATFORM__API_KEY: ${LICENCIA_API_KEY:?error}

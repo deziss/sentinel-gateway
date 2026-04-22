@@ -70,9 +70,17 @@ async fn readiness(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }));
     if !redis_ok { all_healthy = false; }
 
-    // ── Activation service check ───────────────────────────────────────────
-    let activation_state = state.activation_service.state().await;
-    checks.insert("activation".to_string(), serde_json::json!(activation_state));
+    // ── Activation service check (saas-only; Community has no activation) ─
+    #[cfg(feature = "saas")]
+    {
+        let activation_state = state.activation_service.state().await;
+        checks.insert("activation".to_string(), serde_json::json!(activation_state));
+    }
+    #[cfg(not(feature = "saas"))]
+    checks.insert(
+        "activation".to_string(),
+        serde_json::json!({ "status": "community", "plan": "community" }),
+    );
 
     // ── Backend availability (at least one healthy if any configured) ──────
     let backend_statuses = state.health_checker.statuses();

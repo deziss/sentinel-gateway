@@ -9,6 +9,12 @@ pub struct TokenBlacklist {
     revoked: DashMap<String, Instant>,
 }
 
+impl Default for TokenBlacklist {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenBlacklist {
     pub fn new() -> Self {
         Self {

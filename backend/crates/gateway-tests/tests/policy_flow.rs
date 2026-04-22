@@ -71,55 +71,55 @@ async fn rate_limiter_returns_remaining_count() {
 
 // ── Budget Enforcer ───────────────────────────────────────────────────────
 
-#[test]
-fn budget_allows_within_limit() {
+#[tokio::test]
+async fn budget_allows_within_limit() {
     let enf = BudgetEnforcer::new();
     let tenant = Uuid::new_v4();
 
-    let status = enf.check(tenant, 0.50, 5.0, 10.0).unwrap();
+    let status = enf.check(tenant, 0.50, 5.0, 10.0).await.unwrap();
     assert!(matches!(status, BudgetStatus::WithinLimits { .. }));
 }
 
-#[test]
-fn budget_warns_at_soft_limit() {
+#[tokio::test]
+async fn budget_warns_at_soft_limit() {
     let enf = BudgetEnforcer::new();
     let tenant = Uuid::new_v4();
-    enf.record(tenant, 5.0);
+    enf.record(tenant, 5.0).await;
 
-    let status = enf.check(tenant, 0.50, 5.0, 10.0).unwrap();
+    let status = enf.check(tenant, 0.50, 5.0, 10.0).await.unwrap();
     assert!(matches!(status, BudgetStatus::SoftLimitExceeded { .. }));
 }
 
-#[test]
-fn budget_blocks_at_hard_limit() {
+#[tokio::test]
+async fn budget_blocks_at_hard_limit() {
     let enf = BudgetEnforcer::new();
     let tenant = Uuid::new_v4();
-    enf.record(tenant, 10.0);
+    enf.record(tenant, 10.0).await;
 
-    let result = enf.check(tenant, 0.50, 5.0, 10.0);
+    let result = enf.check(tenant, 0.50, 5.0, 10.0).await;
     assert!(result.is_err(), "should exceed hard limit");
 }
 
-#[test]
-fn budget_isolates_tenants() {
+#[tokio::test]
+async fn budget_isolates_tenants() {
     let enf = BudgetEnforcer::new();
     let t1 = Uuid::new_v4();
     let t2 = Uuid::new_v4();
 
-    enf.record(t1, 100.0);
+    enf.record(t1, 100.0).await;
     // t2 is unaffected
-    let status = enf.check(t2, 1.0, 10.0, 50.0).unwrap();
+    let status = enf.check(t2, 1.0, 10.0, 50.0).await.unwrap();
     assert!(matches!(status, BudgetStatus::WithinLimits { .. }));
 }
 
-#[test]
-fn budget_tracks_multiple_periods() {
+#[tokio::test]
+async fn budget_tracks_multiple_periods() {
     let enf = BudgetEnforcer::new();
     let tenant = Uuid::new_v4();
-    enf.record(tenant, 5.0);
+    enf.record(tenant, 5.0).await;
 
-    let daily = enf.get_spend(&format!("ten:{tenant}"), BudgetPeriod::Daily);
-    let monthly = enf.get_spend(&format!("ten:{tenant}"), BudgetPeriod::Monthly);
+    let daily = enf.get_spend(&format!("ten:{tenant}"), BudgetPeriod::Daily).await;
+    let monthly = enf.get_spend(&format!("ten:{tenant}"), BudgetPeriod::Monthly).await;
 
     assert_eq!(daily, 5.0);
     assert_eq!(monthly, 5.0);

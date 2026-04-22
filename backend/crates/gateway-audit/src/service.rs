@@ -136,7 +136,6 @@ async fn dispatch_webhook(
     // Dispatch in a separate task to not block the audit pipeline
     let dispatcher = dispatcher.clone();
     let event = event.clone();
-    let endpoints = endpoints;
     tokio::spawn(async move {
         dispatcher.dispatch(&event, &endpoints).await;
     });

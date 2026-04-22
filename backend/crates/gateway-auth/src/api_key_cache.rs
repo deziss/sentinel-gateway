@@ -46,6 +46,7 @@ impl ApiKeyCache {
     }
 
     /// Insert or update a cache entry.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &self,
         key_hash: String,

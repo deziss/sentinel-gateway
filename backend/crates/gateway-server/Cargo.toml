@@ -8,6 +8,12 @@ license.workspace = true
 name = "gateway-server"
 path = "src/main.rs"
 
+[features]
+default = ["paas"]
+community = []
+paas = ["saas"]
+saas = ["gateway-license/saas"]
+
 [dependencies]
 gateway-db = { path = "../gateway-db" }
 gateway-auth = { path = "../gateway-auth" }

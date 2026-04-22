@@ -205,3 +205,84 @@ pub async fn reload_config(
         "message": "Hot-reloadable settings refreshed. Restart required for: db, jwt, encryption, tls, port, deployment_mode."
     }))).into_response()
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SetLicenseRequest {
+    pub license_key: String,
+    pub plan: String,
+    pub license_type: Option<String>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `POST /api/v1/admin/tenants/:id/license` — Set/Update license for a tenant.
+pub async fn set_tenant_license(
+    State(s): State<Arc<AppState>>,
+    Extension(auth): Extension<RequireAuth>,
+    axum::extract::Path(tenant_id): axum::extract::Path<uuid::Uuid>,
+    Json(payload): Json<SetLicenseRequest>,
+) -> impl IntoResponse {
+    if !auth.0.role.is_super_admin() {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "SuperAdmin required"}))).into_response();
+    }
+
+    let plan = gateway_license::Plan::from_str(&payload.plan);
+    let flags = gateway_license::FeatureFlags::for_plan(plan);
+
+    let create_or_update = gateway_db::models::tenant_license::CreateTenantLicense {
+        tenant_id,
+        license_key: payload.license_key,
+        license_type: payload.license_type.unwrap_or_else(|| "online".to_string()),
+        status: "active".to_string(),
+        plan: payload.plan,
+        entitlements: serde_json::to_value(&flags).unwrap(),
+        fingerprint: None,
+        expires_at: payload.expires_at,
+        offline_token: None,
+    };
+
+    // Try to find existing to decide between create/update
+    let result = match s.tenant_license_repo.find_by_tenant_id(tenant_id).await {
+        Ok(Some(_)) => {
+            let update = gateway_db::models::tenant_license::UpdateTenantLicense {
+                status: Some(create_or_update.status),
+                plan: Some(create_or_update.plan),
+                entitlements: Some(create_or_update.entitlements),
+                fingerprint: None,
+                expires_at: Some(create_or_update.expires_at),
+                last_validated_at: Some(chrono::Utc::now()),
+                last_reported_at: None,
+                offline_token: None,
+            };
+            s.tenant_license_repo.update(tenant_id, update).await
+        }
+        Ok(None) => s.tenant_license_repo.create(create_or_update).await,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    match result {
+        Ok(l) => {
+            #[cfg(feature = "saas")]
+            s.tenant_license_service.invalidate(tenant_id).await;
+            
+            (StatusCode::OK, Json(l)).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// `GET /api/v1/admin/tenants/:id/license` — View tenant license status.
+pub async fn get_tenant_license(
+    State(s): State<Arc<AppState>>,
+    Extension(auth): Extension<RequireAuth>,
+    axum::extract::Path(tenant_id): axum::extract::Path<uuid::Uuid>,
+) -> impl IntoResponse {
+    if !auth.0.role.is_super_admin() {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "SuperAdmin required"}))).into_response();
+    }
+
+    match s.tenant_license_repo.find_by_tenant_id(tenant_id).await {
+        Ok(Some(l)) => (StatusCode::OK, Json(l)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No license found"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}

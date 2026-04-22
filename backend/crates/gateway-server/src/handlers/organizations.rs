@@ -37,7 +37,7 @@ pub async fn list(
     Extension(auth): Extension<RequireAuth>,
 ) -> impl IntoResponse {
     if let Err(resp) = require_super_admin(&auth) { return resp; }
-    if let Err(resp) = require_feature(&state, Feature::OrgManagement).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::OrgManagement).await { return resp; }
     match state.organization_repo.list().await {
         Ok(orgs) => (StatusCode::OK, Json(orgs)).into_response(),
         Err(e) => err_500(e),
@@ -50,7 +50,7 @@ pub async fn create(
     Json(body): Json<CreateRequest>,
 ) -> impl IntoResponse {
     if let Err(resp) = require_super_admin(&auth) { return resp; }
-    if let Err(resp) = require_feature(&state, Feature::OrgManagement).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::OrgManagement).await { return resp; }
     let input = CreateOrganization {
         slug: body.slug,
         name: body.name,
@@ -85,7 +85,7 @@ pub async fn delete(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     if let Err(resp) = require_super_admin(&auth) { return resp; }
-    if let Err(resp) = require_feature(&state, Feature::OrgManagement).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::OrgManagement).await { return resp; }
     match state.organization_repo.delete(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err_500(e),

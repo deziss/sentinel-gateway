@@ -1,0 +1,135 @@
+# =============================================================================
+# Sentinel Gateway — Prometheus SLO Recording Rules
+#
+# Referenced by docs/operations.md SLO table.
+# Load with: --web.enable-lifecycle + POST /-/reload, or restart Prometheus.
+#
+# SLO targets (30-day windows):
+#   - Availability:  99.9%  → error budget = 43m 12s / 30d
+#   - Latency p95:   < 500ms
+#   - Latency p99:   < 2s
+#   - Error budget burn rate (1h window): < 1.0
+# =============================================================================
+
+groups:
+  # ── SLI: Success Ratio ──────────────────────────────────────────────────────
+  - name: sentinel_gateway_sli_success
+    interval: 30s
+    rules:
+      # 5-minute success ratio (HTTP 5xx = failure)
+      - record: sli:http_request_success_ratio:5m
+        expr: |
+          sum(rate(http_requests_total{status!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      # 1-hour success ratio (for burn-rate computation)
+      - record: sli:http_request_success_ratio:1h
+        expr: |
+          sum(rate(http_requests_total{status!~"5.."}[1h]))
+          /
+          sum(rate(http_requests_total[1h]))
+
+      # Per-tenant 5m success ratio (debugging surface)
+      - record: sli:http_request_success_ratio_by_tenant:5m
+        expr: |
+          sum by (tenant_id) (rate(proxy_requests_total{status!~"5.."}[5m]))
+          /
+          sum by (tenant_id) (rate(proxy_requests_total[5m]))
+
+  # ── SLI: Latency ─────────────────────────────────────────────────────────────
+  - name: sentinel_gateway_sli_latency
+    interval: 30s
+    rules:
+      # p95 over 5m
+      - record: sli:http_request_duration_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+
+      # p99 over 5m
+      - record: sli:http_request_duration_p99:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+
+      # p95 per tenant (proxy-layer; for per-tenant SLA reporting)
+      - record: sli:proxy_request_duration_p95_by_tenant:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, tenant_id) (rate(proxy_request_duration_seconds_bucket[5m]))
+          )
+
+      # p99 per tenant
+      - record: sli:proxy_request_duration_p99_by_tenant:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le, tenant_id) (rate(proxy_request_duration_seconds_bucket[5m]))
+          )
+
+  # ── Error Budget Burn Rate ───────────────────────────────────────────────────
+  - name: sentinel_gateway_error_budget
+    interval: 1m
+    rules:
+      # Target = 99.9% → error rate budget = 0.1% over 30 days.
+      # Multi-window burn rate (Google SRE Workbook pattern):
+      #   Alert when burn rate > 14.4× (1h window) — consumes 2% budget in 1h
+      #   Alert when burn rate > 6×   (6h window) — consumes 5% budget in 6h
+      # burn_rate = (1 - success_ratio) / (1 - slo_target)
+
+      # 1-hour burn rate
+      - record: sli:error_budget_burn_rate:1h
+        expr: |
+          (1 - sli:http_request_success_ratio:1h) / (1 - 0.999)
+
+      # 6-hour burn rate (slower moving — catches sustained degradation)
+      - record: sli:error_budget_burn_rate:6h
+        expr: |
+          (
+            1 -
+            (
+              sum(rate(http_requests_total{status!~"5.."}[6h]))
+              /
+              sum(rate(http_requests_total[6h]))
+            )
+          ) / (1 - 0.999)
+
+  # ── Backend Health Aggregates ───────────────────────────────────────────────
+  - name: sentinel_gateway_backend_health
+    interval: 30s
+    rules:
+      # Fraction of healthy backends per tenant (1.0 = all healthy, 0.0 = all down)
+      - record: sli:backend_health_ratio_by_tenant:instant
+        expr: |
+          avg by (tenant_id) (backend_health_status)
+
+      # 1 if all backends for a tenant are unhealthy, 0 otherwise
+      - record: sli:all_backends_unhealthy_by_tenant:instant
+        expr: |
+          (avg by (tenant_id) (backend_health_status) == 0) or
+          (avg by (tenant_id) (backend_health_status) * 0)
+
+  # ── LLM Cost + Token Aggregates ─────────────────────────────────────────────
+  - name: sentinel_gateway_llm
+    interval: 1m
+    rules:
+      # Per-tenant total cost (rolling 1h)
+      - record: sli:cost_usd_rate_by_tenant:1h
+        expr: |
+          sum by (tenant_id) (rate(cost_usd_total[1h])) * 3600
+
+      # Per-tenant total tokens (rolling 1h)
+      - record: sli:tokens_rate_by_tenant:1h
+        expr: |
+          sum by (tenant_id, direction) (rate(tokens_total[1h])) * 3600
+
+      # LLM log write failure rate (data-loss detection)
+      - record: sli:llm_log_write_error_rate:5m
+        expr: |
+          sum(rate(llm_log_write_errors_total[5m]))

@@ -52,7 +52,7 @@ impl PasswordService {
         // Check if currently locked out
         // We use check with 0 window time or high threshold to see if we've reached max_attempts
         // Here we just use the rate limiter as a strike counter
-        if let Err(_) = self.rate_limiter.check(&lockout_key, self.max_attempts).await {
+        if self.rate_limiter.check(&lockout_key, self.max_attempts).await.is_err() {
             return Err(AuthError::Internal("Account temporarily locked. Too many failed attempts.".into()));
         }
 

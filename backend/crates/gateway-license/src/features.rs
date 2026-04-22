@@ -15,6 +15,12 @@ pub enum Plan {
 }
 
 impl Plan {
+    /// Parse a plan tier from a string, defaulting to `Community` on any unrecognized input.
+    ///
+    /// Infallible by design: unknown plan names (including empty/whitespace) degrade to the
+    /// safe free tier rather than erroring. This is NOT `std::str::FromStr`; that trait would
+    /// require a `Result` return, and callers across the gateway rely on graceful fallback.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "professional" | "pro" => Plan::Professional,
@@ -50,50 +56,48 @@ impl Plan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentMode {
-    /// Fully offline, no license required, auto-provisioned single tenant.
-    /// Uses Community plan features.
+    /// Community edition — fully offline, no license required, core features only.
     Local,
-    /// Connected to platform, license-validated.
-    /// Plan determined by license (Community / Professional / Enterprise).
+    /// PaaS mode — developer/superadmin, all features unlocked via developer secret.
+    PaaS,
     Platform,
 }
 
-/// Feature flags derived from the license plan.
-///
-/// Fields match the published pricing matrix. See `for_plan()` for per-tier
-/// assignments.
+/// Feature flags and quotas for the current license.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureFlags {
     pub plan: Plan,
-
-    // ── Monthly request quota ───────────────────────────
-    /// Max requests per month. `u64::MAX` = unlimited (OSS self-hosted / Enterprise).
+    
+    // Quotas
     pub max_requests_per_month: u64,
-
-    // ── Legacy quotas (kept for backward compat) ────────
     pub max_backends: u32,
     pub max_users: u32,
     pub max_api_keys: u32,
     pub max_requests_per_minute: u32,
     pub max_monthly_budget: f64,
+    pub retention_days: u32,
 
-    // ── AI Gateway (Core) ───────────────────────────────
+    // Core Gateway
     pub universal_api: bool,
     pub automatic_fallbacks: bool,
     pub loadbalancing: bool,
     pub conditional_routing: bool,
     pub automatic_retries: bool,
     pub request_timeouts: bool,
-    pub config_management: bool,
-    pub llm_key_management: bool, // Virtual keys
+    pub multi_provider_fallback: bool,
 
-    // ── Caching ─────────────────────────────────────────
+    // Management
+    pub config_management: bool,
+    pub llm_key_management: bool,
+    pub admin_apis_enabled: bool,
+    pub dashboard_enabled: bool,
+
+    // Caching
     pub simple_cache_enabled: bool,
     pub semantic_cache_enabled: bool,
-    /// Max cache TTL in seconds. `u64::MAX` = unlimited.
     pub cache_max_ttl_secs: u64,
 
-    // ── Observability ───────────────────────────────────
+    // Observability
     pub logs_enabled: bool,
     pub traces_enabled: bool,
     pub feedback_enabled: bool,
@@ -101,12 +105,11 @@ pub struct FeatureFlags {
     pub filters_enabled: bool,
     pub alerts_enabled: bool,
     pub finops_dashboard_enabled: bool,
-    /// Log retention in days. 0 = disabled, u32::MAX = unlimited/custom.
-    pub retention_days: u32,
+    pub audit_logs_enabled: bool,
+    pub datalake_export_enabled: bool,
 
-    // ── Prompt Management ───────────────────────────────
+    // LLM Advanced
     pub prompt_templates_enabled: bool,
-    /// Max prompt templates. `u32::MAX` = unlimited.
     pub max_prompt_templates: u32,
     pub playground_enabled: bool,
     pub prompt_api_deployment: bool,
@@ -115,40 +118,32 @@ pub struct FeatureFlags {
     pub prompt_partials_enabled: bool,
     pub prompt_side_by_side_enabled: bool,
     pub prompt_access_control: bool,
-
-    // ── Guardrails ──────────────────────────────────────
     pub deterministic_guardrails: bool,
     pub partner_guardrails: bool,
     pub pii_redaction_enabled: bool,
-
-    // ── Fine-Tuning ─────────────────────────────────────
     pub unified_fine_tuning_batch: bool,
     pub private_llm_cloud: bool,
     pub autonomous_fine_tuning: bool,
 
-    // ── Security & Compliance ───────────────────────────
+    // Security & Enterprise
     pub rbac_enabled: bool,
     pub rbac_advanced: bool,
     pub team_management: bool,
     pub team_management_advanced: bool,
-    pub audit_logs_enabled: bool,
-    pub admin_apis_enabled: bool,
     pub scim_provisioning: bool,
     pub jwt_auth_enabled: bool,
     pub byok_enabled: bool,
+    pub sso_enabled: bool,
     pub org_metadata_reporting: bool,
     pub org_llm_guardrails: bool,
-    /// SSO enabled (backend already has 5 OAuth2 providers; flag only licenses the feature).
-    pub sso_enabled: bool,
     pub compliance_certs: bool,
     pub baa_signing: bool,
     pub vpc_managed_hosting: bool,
     pub private_tenancy: bool,
     pub configurable_retention: bool,
-    pub datalake_export_enabled: bool,
     pub org_management_enabled: bool,
 
-    // ── Legacy / transitional flags ─────────────────────
+    // Legacy / Other
     pub graphql_enabled: bool,
     pub grpc_enabled: bool,
     pub multi_tenant: bool,
@@ -157,18 +152,21 @@ pub struct FeatureFlags {
     pub ip_filtering_enabled: bool,
     pub budget_enforcement_enabled: bool,
     pub model_federation_enabled: bool,
-    pub multi_provider_fallback: bool,
     pub cost_analytics_enabled: bool,
     pub custom_model_pricing: bool,
     pub embedding_support: bool,
     pub streaming_support: bool,
     pub websocket_enabled: bool,
     pub http3_enabled: bool,
-    /// @deprecated — use `retention_days`. Kept for migration.
     pub audit_log_retention_days: u32,
 }
 
 impl FeatureFlags {
+    /// All features ON, all quotas unlimited. Used in PaaS/developer mode.
+    pub fn all_unlocked() -> Self {
+        Self::for_plan(Plan::Enterprise)
+    }
+
     pub fn for_plan(plan: Plan) -> Self {
         match plan {
             // ── Community (Open Source self-hosted) ───────────────────
@@ -191,6 +189,7 @@ impl FeatureFlags {
                 request_timeouts: true,
                 config_management: false,
                 llm_key_management: false,
+                dashboard_enabled: false,
 
                 simple_cache_enabled: false,
                 semantic_cache_enabled: false,
@@ -282,6 +281,7 @@ impl FeatureFlags {
                 request_timeouts: true,
                 config_management: true,
                 llm_key_management: true,
+                dashboard_enabled: true,
 
                 simple_cache_enabled: true,
                 semantic_cache_enabled: true,
@@ -372,6 +372,8 @@ impl FeatureFlags {
                 request_timeouts: true,
                 config_management: true,
                 llm_key_management: true,
+                admin_apis_enabled: true,
+                dashboard_enabled: true,
 
                 simple_cache_enabled: true,
                 semantic_cache_enabled: true,
@@ -409,7 +411,6 @@ impl FeatureFlags {
                 team_management: true,
                 team_management_advanced: true,
                 audit_logs_enabled: true,
-                admin_apis_enabled: true,
                 scim_provisioning: true,
                 jwt_auth_enabled: true,
                 byok_enabled: true,

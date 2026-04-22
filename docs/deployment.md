@@ -5,13 +5,16 @@
 | Component | Required | Version |
 |-----------|----------|---------|
 | PostgreSQL | ✅ | 16+ |
+| PgBouncer | ✅ (shipped in compose) | 1.23+ |
 | Redis | Required if `replicas > 1` | 7+ |
 | OpenSSL | For key generation | any |
 | OTEL Collector | Optional (for traces) | 0.115+ |
 
 ## Quick Start (Docker Compose)
 
-Ships with everything prewired: Postgres, Redis, migrator sidecar, keygen sidecar, backend, OTEL collector, frontend.
+Ships with everything prewired: Postgres, PgBouncer (port 6432), Redis, migrator sidecar, keygen sidecar, backend, OTEL collector, frontend.
+
+> **Note:** `backend` connects through PgBouncer (`pgbouncer:6432`) for connection pooling. The `migrator` job connects directly to Postgres (`db:5432`) because DDL is incompatible with PgBouncer transaction mode.
 
 ```bash
 git clone <repo>
@@ -163,11 +166,12 @@ Do not combine these into one endpoint — they serve different Kubernetes behav
 ### Scale-out Checklist
 
 Before setting `replicaCount > 1`:
-- ☐ Redis is available and `redis.enabled=true`
-- ☐ `GATEWAY__REPLICAS` env matches `replicaCount` (so the server fails fast if misconfigured)
-- ☐ `autoMigrate=false` (use the migrator Job)
-- ☐ PgBouncer recommended at `max_connections * replicaCount > 150`
-- ☐ PodDisruptionBudget set to prevent all replicas from going down during upgrades
+- ☑ Redis is available and `redis.enabled=true`
+- ☑ `GATEWAY__REPLICAS` env matches `replicaCount` (so the server fails fast if misconfigured)
+- ☑ `autoMigrate=false` (use the migrator Job)
+- ☑ PgBouncer is in front of PostgreSQL (shipped in compose; Helm `pgbouncer` subchart recommended for Kubernetes)
+- ☑ Budget enforcer and rate limiter will auto-use Redis when `GATEWAY__REDIS__URL` is set — verify this at startup (`INFO Budget enforcer: Redis backend`)
+- ☑ PodDisruptionBudget set to prevent all replicas from going down during upgrades
 
 ## Bare Metal / VM
 
@@ -219,16 +223,23 @@ gateway-server generate-keys          Generate RSA 2048 JWT signing keys
 ## Observability Setup
 
 ### Prometheus
-The Prometheus scrape config and 10 alert rules are at [deploy/prometheus/](../deploy/prometheus/):
+The Prometheus scrape config, SLO recording rules, and 10 alert rules are at [deploy/prometheus/](../deploy/prometheus/):
 - `prometheus.yml` — scrape config for Docker + Kubernetes SD
-- `alerts.yml` — SLO alerts (error rate, p95/p99 latency, backend health, budget)
+- `rules.yml` — **SLI recording rules** (success ratio, latency p95/p99 global and per-tenant, multi-window error-budget burn rates, backend health aggregates, LLM telemetry)
+- `alerts.yml` — SLO alert thresholds (error rate, p95/p99 latency, backend health, budget)
 
 ```bash
 # Docker
-docker run -v $(pwd)/deploy/prometheus:/etc/prometheus prom/prometheus
+docker run \
+  -v $(pwd)/deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml \
+  -v $(pwd)/deploy/prometheus/rules.yml:/etc/prometheus/rules.yml \
+  -v $(pwd)/deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml \
+  prom/prometheus
 
 # Kubernetes
-kubectl create configmap prometheus-rules --from-file=deploy/prometheus/alerts.yml
+kubectl create configmap prometheus-rules \
+  --from-file=deploy/prometheus/alerts.yml \
+  --from-file=deploy/prometheus/rules.yml
 ```
 
 ### Grafana

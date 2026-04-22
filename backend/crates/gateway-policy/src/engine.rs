@@ -13,8 +13,9 @@ use crate::{
 /// Evaluation order:
 /// 1. IP Filter (global + tenant)
 /// 2. Request Body Size
-/// 3. Budget Check (daily per tenant, monthly per tenant)
-/// 4. Rate Limiting (per API key > per user > per tenant)
+/// 3. GraphQL Depth Check
+/// 4. Budget Check (daily per tenant, monthly per tenant)
+/// 5. Rate Limiting (per API key > per user > per tenant)
 pub struct PolicyEngine {
     pub ip_filter: Arc<IpFilter>,
     pub budget_enforcer: Arc<BudgetEnforcer>,
@@ -35,6 +36,7 @@ impl PolicyEngine {
     }
 
     /// Evaluate all active policies for a request.
+    #[allow(clippy::too_many_arguments)]
     pub async fn evaluate(
         &self,
         ip: &str,
@@ -70,9 +72,9 @@ impl PolicyEngine {
             }
         }
 
-        // 4. Budget Check (daily)
+        // 4. Budget Check (daily) — async, Redis-safe
         if hard_budget > 0.0 || soft_budget > 0.0 {
-            self.budget_enforcer.check(tenant_id, estimated_cost, soft_budget, hard_budget)?;
+            self.budget_enforcer.check(tenant_id, estimated_cost, soft_budget, hard_budget).await?;
         }
 
         // 5. Rate Limiting — most specific key wins
@@ -90,6 +92,7 @@ impl PolicyEngine {
     }
 
     /// Evaluate with model-specific rate limiting (for LLM endpoints).
+    #[allow(clippy::too_many_arguments)]
     pub async fn evaluate_with_model(
         &self,
         ip: &str,
@@ -107,7 +110,7 @@ impl PolicyEngine {
         self.ip_filter.check_for_tenant(ip, tenant_id)?;
 
         if hard_budget > 0.0 || soft_budget > 0.0 {
-            self.budget_enforcer.check(tenant_id, estimated_cost, soft_budget, hard_budget)?;
+            self.budget_enforcer.check(tenant_id, estimated_cost, soft_budget, hard_budget).await?;
         }
 
         // Entity-level rate limit
@@ -133,9 +136,13 @@ impl PolicyEngine {
         Ok(())
     }
 
-    /// Record usage after a successful request.
+    /// Record usage after a successful request (fire-and-forget; errors are
+    /// non-fatal and already logged inside `BudgetEnforcer::record_entity`).
     pub fn record_usage(&self, tenant_id: Uuid, actual_cost: f64) {
-        self.budget_enforcer.record(tenant_id, actual_cost);
+        let enforcer = self.budget_enforcer.clone();
+        tokio::spawn(async move {
+            enforcer.record(tenant_id, actual_cost).await;
+        });
     }
 
     /// Record usage with per-user and per-key attribution.
@@ -146,12 +153,15 @@ impl PolicyEngine {
         api_key_id: Option<Uuid>,
         actual_cost: f64,
     ) {
-        self.budget_enforcer.record(tenant_id, actual_cost);
-        if let Some(uid) = user_id {
-            self.budget_enforcer.record_user(uid, actual_cost);
-        }
-        if let Some(kid) = api_key_id {
-            self.budget_enforcer.record_api_key(kid, actual_cost);
-        }
+        let enforcer = self.budget_enforcer.clone();
+        tokio::spawn(async move {
+            enforcer.record(tenant_id, actual_cost).await;
+            if let Some(uid) = user_id {
+                enforcer.record_user(uid, actual_cost).await;
+            }
+            if let Some(kid) = api_key_id {
+                enforcer.record_api_key(kid, actual_cost).await;
+            }
+        });
     }
 }

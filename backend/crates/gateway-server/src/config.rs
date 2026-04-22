@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -16,12 +16,15 @@ pub struct AppConfig {
     pub observability: crate::observability_export::ObservabilityExportConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-    /// "local" (default) or "platform"
+    /// "local" (default), "paas", or "platform"
     pub deployment_mode: String,
+    /// Secure secret used to bypass license checks in PaaS mode.
+    /// Should be a SHA-256 hash derived from the instance_id.
+    pub developer_secret: Option<String>,
     pub saas_mode: bool,
     pub default_tenant_slug: Option<String>,
     pub max_body_size: usize,
@@ -35,7 +38,7 @@ pub struct ServerConfig {
     #[serde(default = "default_cors_allow_all")]
     pub cors_allow_all: bool,
     /// Allowed CORS origins (only used when cors_allow_all is false)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_list_or_string")]
     pub cors_origins: Vec<String>,
     /// Require TLS on all incoming requests. Returns 426 Upgrade Required for plaintext.
     /// Trusts X-Forwarded-Proto header from trusted proxies.
@@ -113,6 +116,10 @@ pub struct LicenseConfig {
     pub license_key: Option<String>,
     pub public_key_path: Option<String>,
     pub grace_period_days: i64,
+    /// Licencia platform base URL for online validation
+    pub licencia_url: Option<String>,
+    /// Licencia API key for platform-level operations
+    pub licencia_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +147,7 @@ impl Default for AppConfig {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 deployment_mode: "local".to_string(),
+                developer_secret: None,
                 saas_mode: false,
                 default_tenant_slug: None,
                 max_body_size: 10 * 1024 * 1024,
@@ -191,6 +199,8 @@ impl Default for AppConfig {
                 license_key: None,
                 public_key_path: None,
                 grace_period_days: 7,
+                licencia_url: None,
+                licencia_api_key: None,
             },
             redis: RedisConfig {
                 url: None,
@@ -213,11 +223,50 @@ pub fn load_config() -> anyhow::Result<AppConfig> {
         .add_source(config::Environment::with_prefix("GATEWAY").separator("__"))
         .build()?;
 
-    match cfg.try_deserialize::<AppConfig>() {
-        Ok(c) => Ok(c),
-        Err(e) => {
+    cfg.try_deserialize::<AppConfig>()
+        .map_err(|e| {
             eprintln!("Configuration error: {e}");
-            Ok(AppConfig::default())
+            e.into()
+        })
+}
+
+fn deserialize_list_or_string<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Visitor, SeqAccess};
+    use std::fmt;
+
+    struct ListOrString;
+
+    impl<'de> Visitor<'de> for ListOrString {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a sequence or a comma-separated string")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect())
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut res = Vec::new();
+            while let Some(value) = seq.next_element()? {
+                res.push(value);
+            }
+            Ok(res)
         }
     }
+
+    deserializer.deserialize_any(ListOrString)
 }

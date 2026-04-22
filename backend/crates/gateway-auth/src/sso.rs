@@ -76,6 +76,10 @@ impl ProviderKind {
         }
     }
 
+    /// Parse a provider kind from its canonical string form; returns `None` for unknown kinds.
+    /// Not `std::str::FromStr` because callers use the `Option` return directly for graceful
+    /// fallback; a `Result` with an error type would only add friction.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "keycloak" => Some(ProviderKind::Keycloak),

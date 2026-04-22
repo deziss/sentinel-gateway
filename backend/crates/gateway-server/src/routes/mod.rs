@@ -66,6 +66,8 @@ fn v1_routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tenants/:id", axum::routing::get(crate::handlers::tenants::get)
             .put(crate::handlers::tenants::update)
             .delete(crate::handlers::tenants::delete))
+        .route("/tenants/:id/license", axum::routing::get(crate::handlers::admin::get_tenant_license)
+            .post(crate::handlers::admin::set_tenant_license))
         .route("/admin/slow-queries", axum::routing::get(crate::handlers::admin::slow_queries))
         .route("/admin/slow-queries/reset", axum::routing::post(crate::handlers::admin::reset_slow_queries))
         .route("/admin/config/reload", axum::routing::post(crate::handlers::admin::reload_config))

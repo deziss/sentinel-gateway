@@ -47,30 +47,39 @@ Sentinel Gateway is a modular monolith written in Rust (Axum) that acts as a uni
 | `gateway-auth` | JWT, password, API keys, RBAC, middleware | `gateway-db`, `gateway-policy` |
 | `gateway-tenant` | Tenant resolution, sync service | `gateway-db`, `gateway-auth` |
 | `gateway-license` | Offline + online activation, feature flags | `gateway-db` |
-| `gateway-policy` | Rate limit, budget, IP filter, guardrails, CEL cost, semantic | `gateway-db` |
+| `gateway-policy` | Rate limit (TokenBucket/SlidingWindow, in-memory + Redis EVALSHA), budget enforcer (in-memory + Redis INCRBYFLOAT), IP filter, guardrails, CEL cost, semantic | `gateway-db` |
 | `gateway-core` | Proxy engine, LB, circuit breaker, WebSocket, GraphQL, gRPC | `gateway-db`, `gateway-auth`, `gateway-tenant` |
 | `gateway-llm` | Providers, adapters, router, cost, cache, PII, smart routing | `gateway-db`, `gateway-core`, `gateway-policy` |
 | `gateway-mcp` | Model Context Protocol server + client aggregator | `gateway-db`, `gateway-auth`, `gateway-policy` |
-| `gateway-audit` | Async buffered audit writer + HMAC-signed webhooks + DLQ | `gateway-db` |
-| `gateway-telemetry` | OTLP traces + Prometheus metrics + W3C propagation | `gateway-auth`, `gateway-tenant` |
+| `gateway-audit` | Async buffered audit writer + HMAC-signed webhooks + DLQ + `llm_log_write_errors_total` counter | `gateway-db`, `gateway-telemetry` |
+| `gateway-telemetry` | OTLP traces + Prometheus metrics (incl. `circuit_breaker_open`, `llm_log_write_errors_total`) + W3C propagation | `gateway-auth`, `gateway-tenant` |
 | `gateway-server` | Binary: wires all crates, CLI, background workers | all of the above |
 | `gateway-tests` | Integration test suite (104 tests) | — |
 
-## Deployment Modes
+## Deployment Modes (Dual-Delivery Model)
 
-### Local Mode *(default, free, offline)*
-- Single auto-provisioned `local` tenant at startup
-- Community feature flags (no SSO, no gRPC, no multi-tenant)
-- No outbound connectivity required
-- Hardware fingerprint generated from hostname + OS + machine-id
-- Can later link to platform via `POST /api/v1/sync/register`
+Sentinel Gateway supports three delivery modes, controlled by build-time features and runtime configuration.
 
-### Platform Mode *(connected, licensed)*
-- License key validated via `gateway-license`:
-  - **Offline:** RSA JWT verification with configurable grace period
-  - **Online:** REST call to licencia platform for activation + heartbeat
-- Entitlements map to `FeatureFlags` (gates multi-tenant, gRPC, SSO, custom branding, model federation)
-- Platform sync: push stats, pull license updates
+### 1. Community Edition *(Open Source, Single Tenant)*
+- **Build:** `cargo build` (default)
+- **Status:** Unrestricted for local use.
+- **Limits:** Single tenant (`local`), no multi-tenancy, no enterprise features (SSO, gRPC, etc. are stripped at compile-time).
+- **Licensing:** No license required.
+
+### 2. PaaS Edition *(Developer/Self-Hosted, All-Features)*
+- **Build:** `cargo build --features saas`
+- **Config:** `DEPLOYMENT_MODE=paas`, `GATEWAY__SERVER__DEVELOPER_SECRET` must match hash of `sentinel-paas:{instance_id}`.
+- **Status:** Unlocks **all enterprise features** without a license server.
+- **Purpose:** For developers and enterprise self-hosted environments where outbound connectivity to Licencia is not possible.
+
+### 3. SaaS / Platform Mode *(Multi-Tenant, Licensed)*
+- **Build:** `cargo build --features saas`
+- **Config:** `DEPLOYMENT_MODE=platform`, `LICENCIA_URL` + `LICENCIA_API_KEY` required.
+- **Status:** Per-tenant licensing. Features are gated by the plan assigned to the tenant.
+- **Licensing:**
+  - **Verification:** 3-tier cache (DashMap L1 → Redis L2 → Postgres L3).
+  - **Resolution:** `require_feature(state, auth, feature)` checks the tenant's specific plan in real-time (~1µs overhead).
+  - **Fallbacks:** Defaults to `Community` plan if license is invalid or unavailable.
 
 ## Request Lifecycle
 
@@ -112,7 +121,9 @@ Sentinel Gateway is a modular monolith written in Rust (Axum) that acts as a uni
 | PostgreSQL table partitioning on `audit_logs` + `usage_records` | Time-series data grows linearly — partitioning by month keeps query planner fast. Auto-creation function creates 3 months ahead. |
 | Partial indexes | `WHERE is_active=true` indexes skip soft-deleted rows. Saves I/O on the hot path. |
 | Cursor pagination on large tables | OFFSET scans and discards rows. Composite `(created_at DESC, id DESC)` cursor is O(log n). |
-| Redis required when `replicas > 1` | In-memory token buckets are per-instance — multi-replica deployments get inconsistent rate limiting without Redis. Fatal startup error enforces this. |
+| Redis required when `replicas > 1` | In-memory token buckets are per-instance — multi-replica deployments get inconsistent rate limiting **and budget tracking** without Redis. Fatal startup error enforces this for rate limiting; budget enforcer warns and falls back gracefully. |
+| EVALSHA for Redis Lua rate-limit scripts | Scripts pre-loaded at startup via `SCRIPT LOAD`; all calls use `EVALSHA` with `EVAL` fallback on `NOSCRIPT`. Eliminates ~80% of per-call Redis bandwidth overhead under load. |
+| Redis INCRBYFLOAT for budget tracking | Atomic float increment is the only correct primitive for cross-replica cost accumulation. Period TTLs are set on every increment so stale keys self-expire. |
 | Field encryption (ChaCha20-Poly1305) for backend credentials | Credentials at rest must be encrypted per security baseline. `encryption_key` required in platform mode. |
 | `pg_advisory_xact_lock` on startup migrations | Prevents race when multiple replicas start simultaneously. Only one runs migrations. |
 | SQLx `log_statements` → `tracing` bridge | Unified observability — DB queries appear in OTel traces and get filtered by `log_queries` config. |
@@ -125,10 +136,11 @@ Per [backend-architect skill](../backend/crates/gateway-server/src/main.rs) reco
 | Bottleneck | Threshold | Mitigation |
 |-----------|-----------|------------|
 | PostgreSQL writes | ~5k QPS | Add read replicas first (audit/usage queries), then shard by `tenant_id` at 5TB |
-| PostgreSQL connections | 200 | Use PgBouncer (not yet shipped — see operations.md) |
+| PostgreSQL connections | 200 | PgBouncer — **now shipped** in dev compose (`pgbouncer:6432`) and prod overlay. Migrator still connects directly (DDL incompatible with transaction-mode pooling). |
 | Single gateway replica | 10k QPS (CPU-bound) | Horizontal scale; requires `GATEWAY__REPLICAS>1` + Redis |
 | Webhook delivery | 1k events/s | DLQ absorbs failures; increase `webhook_max_retries` or dedicate workers |
-| Rate limiter (in-memory) | Single replica only | Switch to Redis backend |
+| Rate limiter (in-memory) | Single replica only | Redis backend auto-selected when `GATEWAY__REDIS__URL` set; uses EVALSHA (pre-loaded at startup) |
+| Budget enforcer (in-memory) | Single replica only | Redis INCRBYFLOAT backend auto-selected when `GATEWAY__REDIS__URL` set; cross-replica spend is consistent |
 
 ## Background Workers
 
@@ -139,8 +151,8 @@ Spawned at startup in `gateway-server`:
 | Active health checker | 30s | Probe `/health` on each backend, update `HealthChecker` cache |
 | Token blacklist cleanup | 60s | Remove expired JTIs from DashMap |
 | API key cache cleanup | 60s | Remove expired entries |
-| Rate limiter cleanup | 5min | Remove idle token buckets |
-| Budget stale period cleanup | 1h | Remove old daily/weekly/monthly period entries |
+| Rate limiter cleanup | 5min | Remove idle in-memory token buckets (no-op for Redis backend) |
+| Budget stale period cleanup | 1h | Remove old daily/weekly/monthly period entries (no-op for Redis backend — keys self-expire via TTL) |
 | License heartbeat | 1h | Re-validate against platform (online mode only) |
 
 ## Database Schema

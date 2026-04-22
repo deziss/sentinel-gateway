@@ -40,7 +40,7 @@ pub async fn submit(
     Extension(auth): Extension<RequireAuth>,
     Json(body): Json<SubmitFeedbackRequest>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Feedback).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::Feedback).await { return resp; }
     if !(-1..=1).contains(&body.rating) {
         return (
             StatusCode::BAD_REQUEST,
@@ -86,7 +86,7 @@ pub async fn list(
     Extension(auth): Extension<RequireAuth>,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Feedback).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::Feedback).await { return resp; }
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     match state
         .llm_feedback_repo
@@ -121,7 +121,7 @@ pub async fn stats(
     Extension(auth): Extension<RequireAuth>,
     Query(q): Query<StatsQuery>,
 ) -> impl IntoResponse {
-    if let Err(resp) = require_feature(&state, Feature::Feedback).await { return resp; }
+    if let Err(resp) = require_feature(&state, &auth.0, Feature::Feedback).await { return resp; }
     let days = q.days.unwrap_or(30).clamp(1, 365);
     match state.llm_feedback_repo.stats(auth.0.tenant_id, days).await {
         Ok((total, pos, neg)) => {

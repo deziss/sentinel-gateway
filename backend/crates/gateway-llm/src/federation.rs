@@ -25,6 +25,12 @@ pub struct ModelFederation {
     known_models: DashMap<String, Vec<ModelInfo>>,
 }
 
+impl Default for ModelFederation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelFederation {
     pub fn new() -> Self {
         Self {
@@ -60,7 +66,7 @@ impl ModelFederation {
         for model in &models {
             self.known_models
                 .entry(model.id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(model.clone());
         }
 

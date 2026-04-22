@@ -45,8 +45,10 @@ pub enum HealthStatus {
 /// `Strict` > `NoTraining` > `NoRetention` > `Standard`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, PartialOrd, Ord)]
 #[sqlx(type_name = "data_policy", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DataPolicy {
     /// Provider's default policy (may log for abuse detection).
+    #[default]
     Standard,
     /// 0-day retention (OpenAI ZDR, Anthropic zero retention).
     NoRetention,
@@ -56,11 +58,6 @@ pub enum DataPolicy {
     Strict,
 }
 
-impl Default for DataPolicy {
-    fn default() -> Self {
-        Self::Standard
-    }
-}
 
 impl DataPolicy {
     /// Whether this policy satisfies the required minimum.

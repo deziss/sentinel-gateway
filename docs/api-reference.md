@@ -543,6 +543,36 @@ Returns `501 Not Implemented` if the extension is not loaded.
 ### `POST /admin/slow-queries/reset`
 Reset `pg_stat_statements` counters.
 
+### `GET /tenants/:id/license` *(SuperAdmin)*
+View the current license status and entitlements for a specific tenant.
+
+**Response 200**
+```json
+{
+  "id": "uuid",
+  "tenant_id": "uuid",
+  "license_key": "...",
+  "status": "active",
+  "plan": "professional",
+  "entitlements": { ... },
+  "expires_at": "2026-12-31T23:59:59Z"
+}
+```
+
+### `POST /tenants/:id/license` *(SuperAdmin)*
+Assign or update a license for a specific tenant.
+
+**Request**
+```json
+{
+  "license_key": "...",
+  "plan": "professional",
+  "license_type": "online",
+  "expires_at": "2026-12-31T23:59:59Z"
+}
+```
+Valid plans: `community`, `professional`, `enterprise`.
+
 ---
 
 ## Health + Metrics

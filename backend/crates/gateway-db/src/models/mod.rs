@@ -18,6 +18,7 @@ pub mod tenant_pricing;
 pub mod sso;
 pub mod organization;
 pub mod llm_feedback;
+pub mod tenant_license;
 
 pub use tenant::Tenant;
 pub use user::{User, UserRole, UserStatus};

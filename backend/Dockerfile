@@ -25,7 +25,8 @@ FROM chef AS builder
 
 # Cook dependencies from the recipe — this layer is cached unless Cargo.lock changes
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+ARG EDITION=paas
+RUN cargo chef cook --release --features ${EDITION} --no-default-features --recipe-path recipe.json
 
 # Copy full source and build the application
 COPY Cargo.toml Cargo.lock ./
@@ -35,7 +36,9 @@ COPY .env.example ./.env.example
 COPY keys ./keys
 COPY config ./config
 
-RUN cargo build --release
+ARG EDITION=paas
+
+RUN cargo build --release --features ${EDITION} --no-default-features
 
 # ── Stage 4: Runtime ─────────────────────────────────────────────────────────
 # Use same base as builder for glibc compatibility

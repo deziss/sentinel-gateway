@@ -26,6 +26,7 @@ Budget at 99.9% over 30d = **43 min 12 sec** of downtime per month.
 | BudgetExceededSpike | `warning` | Cost analysis |
 | UnusualTokenUsage | `warning` | Abuse detection |
 | HighActiveConnections | `warning` | Scale hint |
+| LlmLogWriteErrors | `warning` | Investigate `llm_log_write_errors_total` — data loss in progress |
 
 ## Metrics
 
@@ -57,10 +58,38 @@ All metrics exposed at `GET /metrics` in Prometheus text format.
 
 ### Policy enforcement
 | Metric | Type | Labels |
-|--------|------|--------|
+|--------|------|---------|
 | `rate_limited_total` | Counter | tenant_id, key_type |
 | `budget_exceeded_total` | Counter | tenant_id |
 | `errors_total` | Counter | kind, tenant_id |
+
+### Circuit breaker
+| Metric | Type | Labels |
+|--------|------|---------|
+| `circuit_breaker_open` | Gauge | backend_id, tenant_id (1=open, 0=closed/half-open) |
+
+### LLM logging health
+| Metric | Type | Labels |
+|--------|------|---------|
+| `llm_log_write_errors_total` | Counter | error_kind (`channel_full` \| `db_timeout` \| `db_error`) |
+
+### SLI recording rules (evaluated by Prometheus)
+
+Shipped in [`deploy/prometheus/rules.yml`](../deploy/prometheus/rules.yml):
+
+| Recording rule | Description |
+|---------------|-------------|
+| `sli:http_request_success_ratio:5m` | 5-min success ratio (basis for availability SLO) |
+| `sli:http_request_success_ratio:1h` | 1-hour success ratio |
+| `sli:http_request_success_ratio_by_tenant:5m` | Per-tenant 5m success ratio |
+| `sli:http_request_duration_p95:5m` | Global p95 latency |
+| `sli:http_request_duration_p99:5m` | Global p99 latency |
+| `sli:proxy_request_duration_p95_by_tenant:5m` | Per-tenant p95 proxy latency |
+| `sli:proxy_request_duration_p99_by_tenant:5m` | Per-tenant p99 proxy latency |
+| `sli:error_budget_burn_rate:1h` | 1h multi-window burn rate |
+| `sli:error_budget_burn_rate:6h` | 6h multi-window burn rate |
+| `sli:backend_health_ratio_by_tenant:instant` | Fraction of healthy backends per tenant |
+| `sli:llm_log_write_error_rate:5m` | LLM log write failure rate |
 
 ## Runbooks
 
@@ -155,11 +184,16 @@ Symptoms: slow DB queries, `error: pool timed out`, `HighErrorRate` firing.
    ```sql
    SELECT COUNT(*) FROM pg_stat_activity WHERE datname = 'sentinel_gateway';
    ```
-2. If close to `max_connections * replicas`, add PgBouncer in front:
+2. **PgBouncer is now shipped** and should be in front of Postgres in both dev and production:
    ```
-   Gateway pods → PgBouncer (transaction mode) → PostgreSQL
+   Gateway pods → pgbouncer:6432 (transaction mode) → PostgreSQL:5432
    ```
-3. Reduce `max_connections` per replica to `20`, let PgBouncer multiplex. Each PostgreSQL connection uses ~10 MB RAM.
+   - Dev compose: `pgbouncer` service at port `6432`, `DEFAULT_POOL_SIZE=20`, `MAX_CLIENT_CONN=100`.
+   - Prod overlay: `DEFAULT_POOL_SIZE=40`, `MAX_CLIENT_CONN=200`, resource-limited.
+   - If the issue persists, increase `DEFAULT_POOL_SIZE` in the compose env and restart PgBouncer (zero-downtime — existing connections are preserved).
+3. If PgBouncer itself is saturated (`MAX_CLIENT_CONN` hit):
+   - Check `SHOW POOLS;` on PgBouncer admin console (`psql -h pgbouncer -p 6432 pgbouncer -U pgbouncer`)
+   - Raise `MAX_CLIENT_CONN` or reduce gateway `max_connections` config.
 
 ### Webhook deliveries failing
 
@@ -176,6 +210,23 @@ curl -X POST https://gateway/api/v1/webhooks/failures/<id>/retry \
 ```
 
 Retries cap at 10 attempts with 60s * 2^attempt backoff (1min, 2min, 4min, ..., max 24h). After 10 failures → status=`abandoned`.
+
+### LLM log write errors (`LlmLogWriteErrors`)
+
+`llm_log_write_errors_total` counter fires on:
+- `channel_full` — the 50K-entry mpsc buffer is overloaded; LLM request rate exceeds log-write throughput.
+- `db_timeout` — DB write took too long; check connection pool saturation.
+- `db_error` — generic DB error; check DB logs for constraint violations or disk exhaustion.
+
+```bash
+# Current error rate per label
+curl -s https://gateway/metrics | grep llm_log_write_errors_total
+
+# Recent DB-level details (if db_error is firing)
+kubectl logs -l app=sentinel-gateway | grep "LLM log batch insert FAILED"
+```
+
+**Impact:** errors mean LLM log records are permanently lost (the batch is discarded). Set an alert on `sli:llm_log_write_error_rate:5m > 0` to catch this early.
 
 ### License expired / revoked
 

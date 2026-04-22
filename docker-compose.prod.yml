@@ -29,6 +29,7 @@ services:
 
   # ── Redis (hardened) ───────────────────────────────────────────────────────
   redis:
+    profiles: ["${ENABLE_REDIS:-default}"]
     command: >
       redis-server
       --maxmemory 256mb
@@ -53,7 +54,7 @@ services:
 
   # ── PgBouncer (connection pooler) ──────────────────────────────────────────
   pgbouncer:
-    image: edoburu/pgbouncer:1.23.1
+    image: edoburu/pgbouncer:v1.25.1-p0
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-sentinel_gateway}
       POOL_MODE: transaction
@@ -61,6 +62,7 @@ services:
       MAX_CLIENT_CONN: "200"
       MAX_DB_CONNECTIONS: "50"
       SERVER_TLS_SSLMODE: prefer
+      LISTEN_PORT: 6432
     ports:
       - "6432:6432"
     depends_on:
@@ -87,13 +89,19 @@ services:
   backend:
     environment:
       GATEWAY__DATABASE__URL: postgres://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-sentinel_gateway}
-      GATEWAY__REDIS__URL: redis://:${REDIS_PASSWORD:-}@redis:6379
+      GATEWAY__REDIS__URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:-}@redis:6379}
+      GATEWAY__SERVER__CORS_ALLOW_ALL: "false"
+      GATEWAY__SERVER__CORS_ORIGINS__0: "http://localhost:3000"
+      GATEWAY__SERVER__CORS_ORIGINS__1: "http://localhost:3005"
       GATEWAY__SERVER__SAAS_MODE: "${SAAS_MODE:-false}"
       GATEWAY__AUTH__JWT_PRIVATE_KEY_PATH: /app/keys/private.pem
       GATEWAY__AUTH__JWT_PUBLIC_KEY_PATH: /app/keys/public.pem
       GATEWAY__TELEMETRY__LOG_LEVEL: "${LOG_LEVEL:-warn}"
-      GATEWAY__TELEMETRY__OTLP_ENDPOINT: http://otel-collector:4317
+      GATEWAY__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://otel-collector:4317}
+      GATEWAY__SERVER__DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-platform}
       GATEWAY__LICENSE__LICENSE_KEY: "${LICENSE_KEY:-}"
+      GATEWAY__PLATFORM__URL: "${LICENCIA_URL:-}"
+      GATEWAY__PLATFORM__API_KEY: "${LICENCIA_API_KEY:-}"
     ports:
       - "8080:8080"
     depends_on:
@@ -101,6 +109,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+        required: false
       pgbouncer:
         condition: service_healthy
       migrator:
@@ -143,6 +152,7 @@ services:
 
   # ── OTel Collector (production) ────────────────────────────────────────────
   otel-collector:
+    profiles: ["${ENABLE_OTEL:-default}"]
     ports: []  # No host ports in production
     deploy:
       resources:
@@ -153,3 +163,6 @@ services:
           cpus: "0.25"
           memory: 128M
     restart: unless-stopped
+networks:
+  default:
+    name: sentinel_gateway_prod_net

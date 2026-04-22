@@ -24,10 +24,10 @@ pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 
 /// Build the upstream WebSocket URL from the HTTP target URL.
 pub fn to_ws_url(http_url: &str) -> String {
-    if http_url.starts_with("https://") {
-        format!("wss://{}", &http_url[8..])
-    } else if http_url.starts_with("http://") {
-        format!("ws://{}", &http_url[7..])
+    if let Some(rest) = http_url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = http_url.strip_prefix("http://") {
+        format!("ws://{rest}")
     } else if http_url.starts_with("wss://") || http_url.starts_with("ws://") {
         http_url.to_string()
     } else {
@@ -70,10 +70,10 @@ pub async fn relay_websocket(
     let u2c = async {
         while let Some(Ok(msg)) = upstream_stream.next().await {
             let axum_msg = match msg {
-                TungMsg::Text(t) => AxumMsg::Text(t.into()),
-                TungMsg::Binary(b) => AxumMsg::Binary(b.into()),
-                TungMsg::Ping(p) => AxumMsg::Ping(p.into()),
-                TungMsg::Pong(p) => AxumMsg::Pong(p.into()),
+                TungMsg::Text(t) => AxumMsg::Text(t),
+                TungMsg::Binary(b) => AxumMsg::Binary(b),
+                TungMsg::Ping(p) => AxumMsg::Ping(p),
+                TungMsg::Pong(p) => AxumMsg::Pong(p),
                 TungMsg::Close(_) => return,
                 _ => continue,
             };

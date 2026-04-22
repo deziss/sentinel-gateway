@@ -33,17 +33,15 @@ pub async fn proxy_handler(
     };
     let tenant_id = tenant_ctx.id();
 
-    // 2. Resolve identity
+    // 2. Resolve identity. Tuple is: (api_key_id, user_id, api_key_rpm, daily_budget, monthly_budget).
     let auth_ctx = req.extensions().get::<RequireAuth>().map(|ra| &ra.0);
-    let (api_key_id, user_id, api_key_rpm, daily_budget, monthly_budget): (
-        Option<Uuid>, Option<Uuid>, Option<i32>, Option<f64>, Option<f64>,
-    ) = match auth_ctx {
+    let (api_key_id, user_id, api_key_rpm, daily_budget, monthly_budget) = match auth_ctx {
         Some(ctx) => match &ctx.method {
             AuthMethod::ApiKey { key_id, .. } => {
                 let cached = state.api_key_cache.get("");
                 match cached {
                     Some(c) => (Some(*key_id), Some(ctx.user_id), c.rate_limit_rpm, c.budget_daily, c.budget_monthly),
-                    None => (Some(*key_id), Some(ctx.user_id), Some(60), None, None),
+                    None => (Some(*key_id), Some(ctx.user_id), Some(60i32), None::<f64>, None::<f64>),
                 }
             }
             AuthMethod::VirtualKey { vkey_id: _, rate_limit_rpm, budget_daily, budget_monthly, .. } => (
@@ -53,9 +51,9 @@ pub async fn proxy_handler(
                 *budget_daily,
                 *budget_monthly,
             ),
-            AuthMethod::Jwt { .. } => (None, Some(ctx.user_id), Some(60), None, None),
+            AuthMethod::Jwt { .. } => (None, Some(ctx.user_id), Some(60i32), None::<f64>, None::<f64>),
         },
-        None => (None, None, Some(10), Some(0.0), Some(0.0)),
+        None => (None::<Uuid>, None::<Uuid>, Some(10i32), Some(0.0f64), Some(0.0f64)),
     };
 
     // 3. Match Route
@@ -183,6 +181,7 @@ pub async fn proxy_handler(
 }
 
 /// Forward with a buffered body (used for GraphQL and small requests).
+#[allow(clippy::too_many_arguments)]
 async fn forward_buffered(
     state: &Arc<AppState>,
     method: axum::http::Method,

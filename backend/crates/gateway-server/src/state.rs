@@ -11,7 +11,9 @@ use gateway_db::repository::{
     OrganizationRepository, LlmFeedbackRepository,
 };
 use gateway_audit::{AuditService, LlmLogService, DataLakeExporter};
-use gateway_license::{ActivationService, DeploymentMode, FeatureFlags};
+use gateway_license::{DeploymentMode, FeatureFlags};
+#[cfg(feature = "saas")]
+use gateway_license::ActivationService;
 use gateway_telemetry::Metrics;
 use gateway_auth::password::PasswordService;
 use std::sync::Arc;
@@ -52,6 +54,7 @@ pub struct AppState {
     pub audit_log_repo: Arc<AuditLogRepository>,
     pub setting_repo: Arc<SettingRepository>,
     pub usage_record_repo: Arc<UsageRecordRepository>,
+    #[cfg(feature = "saas")]
     pub activation_service: Arc<ActivationService>,
     pub webhook_repo: Arc<WebhookEndpointRepository>,
     pub webhook_failure_repo: Arc<WebhookFailureRepository>,
@@ -70,6 +73,9 @@ pub struct AppState {
     pub sso_auth_state_repo: Arc<SsoAuthStateRepository>,
     pub organization_repo: Arc<OrganizationRepository>,
     pub llm_feedback_repo: Arc<LlmFeedbackRepository>,
+    pub tenant_license_repo: Arc<gateway_db::repository::TenantLicenseRepository>,
+    #[cfg(feature = "saas")]
+    pub tenant_license_service: Arc<gateway_license::TenantLicenseService>,
     pub data_lake: DataLakeExporter,
     /// Optional observability exporter (Langfuse / Helicone). `disabled()` if unconfigured.
     pub observability_exporter: crate::observability_export::ObservabilityExporter,

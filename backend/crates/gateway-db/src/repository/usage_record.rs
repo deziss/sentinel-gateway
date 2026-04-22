@@ -129,4 +129,36 @@ impl UsageRecordRepository {
         .await?;
         Ok(records)
     }
+
+    pub async fn get_unreported_usage(
+        &self,
+        tenant_id: Uuid,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> DbResult<Vec<crate::models::usage_record::UsageRecordAggregation>> {
+        // `SUM(bigint)` returns NUMERIC in Postgres; cast back to BIGINT so sqlx
+        // binds cleanly to i64. `provider_type` is the `backend_provider_type` enum —
+        // cast to TEXT to deserialize into the String field on UsageRecordAggregation.
+        let records = sqlx::query_as::<_, crate::models::usage_record::UsageRecordAggregation>(
+            r#"
+            SELECT
+                u.model                                   AS model,
+                b.provider_type::text                     AS provider,
+                COUNT(*)::bigint                          AS total_requests,
+                COALESCE(SUM(u.tokens_input), 0)::bigint  AS total_tokens_input,
+                COALESCE(SUM(u.tokens_output), 0)::bigint AS total_tokens_output,
+                COALESCE(SUM(u.cost_usd), 0)::float8      AS total_cost,
+                MIN(u.created_at)                         AS start_time,
+                MAX(u.created_at)                         AS end_time
+            FROM usage_records u
+            JOIN backends b ON u.backend_id = b.id
+            WHERE u.tenant_id = $1 AND u.created_at > $2
+            GROUP BY u.model, b.provider_type
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(records)
+    }
 }

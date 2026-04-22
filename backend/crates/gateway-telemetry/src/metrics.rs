@@ -17,6 +17,10 @@ pub struct Metrics {
     pub errors_total: CounterVec,
     pub rate_limited_total: CounterVec,
     pub budget_exceeded_total: CounterVec,
+    /// Count of LLM log batch-write failures (fire-and-forget path).
+    pub llm_log_write_errors_total: CounterVec,
+    /// Circuit-breaker state per backend (1=open, 0=closed/half-open).
+    pub circuit_breaker_open: GaugeVec,
 }
 
 impl Metrics {
@@ -76,6 +80,22 @@ impl Metrics {
             &["tenant_id"],
         ).unwrap();
 
+        let llm_log_write_errors_total = CounterVec::new(
+            Opts::new(
+                "llm_log_write_errors_total",
+                "Total LLM log batch-write failures (fire-and-forget path)",
+            ),
+            &["error_kind"],
+        ).unwrap();
+
+        let circuit_breaker_open = GaugeVec::new(
+            Opts::new(
+                "circuit_breaker_open",
+                "Circuit-breaker state per backend (1=open, 0=closed/half-open)",
+            ),
+            &["backend_id", "tenant_id"],
+        ).unwrap();
+
         // Register all
         let all: Vec<Box<dyn prometheus::core::Collector>> = vec![
             Box::new(http_requests_total.clone()),
@@ -89,6 +109,8 @@ impl Metrics {
             Box::new(errors_total.clone()),
             Box::new(rate_limited_total.clone()),
             Box::new(budget_exceeded_total.clone()),
+            Box::new(llm_log_write_errors_total.clone()),
+            Box::new(circuit_breaker_open.clone()),
         ];
         for c in all {
             REGISTRY.register(c).ok();
@@ -106,6 +128,8 @@ impl Metrics {
             errors_total,
             rate_limited_total,
             budget_exceeded_total,
+            llm_log_write_errors_total,
+            circuit_breaker_open,
         }
     }
 
@@ -177,6 +201,19 @@ impl Metrics {
     /// Record a budget-exceeded rejection.
     pub fn record_budget_exceeded(&self, tenant_id: &str) {
         self.budget_exceeded_total.with_label_values(&[tenant_id]).inc();
+    }
+
+    /// Record an LLM log batch-write failure.
+    pub fn record_llm_log_write_error(&self, error_kind: &str) {
+        self.llm_log_write_errors_total.with_label_values(&[error_kind]).inc();
+    }
+
+    /// Set circuit-breaker state for a backend.
+    /// Call with `open = true` when the breaker trips, `false` when it closes.
+    pub fn set_circuit_breaker_state(&self, backend_id: &str, tenant_id: &str, open: bool) {
+        self.circuit_breaker_open
+            .with_label_values(&[backend_id, tenant_id])
+            .set(if open { 1.0 } else { 0.0 });
     }
 
     /// Render all metrics as Prometheus text exposition format.

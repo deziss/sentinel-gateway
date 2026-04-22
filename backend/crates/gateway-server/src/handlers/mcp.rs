@@ -65,10 +65,8 @@ pub async fn handle_jsonrpc(
 
     // Clean internal _session_id from response
     let mut clean_response = response;
-    if let Some(ref mut result) = clean_response.result {
-        if let serde_json::Value::Object(ref mut map) = result {
-            map.remove("_session_id");
-        }
+    if let Some(serde_json::Value::Object(ref mut map)) = clean_response.result {
+        map.remove("_session_id");
     }
 
     (StatusCode::OK, resp_headers, Json(clean_response))

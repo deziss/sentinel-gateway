@@ -77,6 +77,11 @@ impl ActivationService {
         self.state.read().await.clone()
     }
 
+    /// Get the licencia client if available.
+    pub fn client(&self) -> Option<Arc<LicenciaClient>> {
+        self.licencia_client.clone()
+    }
+
     /// Get the current feature flags based on activation state.
     pub async fn features(&self) -> FeatureFlags {
         let state = self.state.read().await;
@@ -234,13 +239,27 @@ impl ActivationService {
     /// Call this from a background task at `next_check_in_secs` intervals.
     pub async fn heartbeat(&self) {
         let current = self.state.read().await.clone();
-        match current {
-            ActivationState::OnlineValid { .. } => {
-                if let Err(e) = self.activate().await {
-                    error!("License heartbeat failed: {e}");
+        // Only heartbeat for online-activated licenses; offline/unlicensed need no action.
+        if let ActivationState::OnlineValid { .. } = current {
+            if let Err(e) = self.activate().await {
+                error!("License heartbeat failed: {e}");
+            }
+        }
+    }
+
+    /// Deactivate the license seat online on clean shutdown.
+    pub async fn deactivate(&self) {
+        let current = self.state.read().await.clone();
+        if let ActivationState::OnlineValid { hardware_fingerprint, .. } = current {
+            if let Some(ref client) = self.licencia_client {
+                if let Some(ref key) = self.license_key {
+                    if let Err(e) = client.deactivate(key, &hardware_fingerprint).await {
+                        error!("Failed to deactivate license on shutdown: {e}");
+                    } else {
+                        info!("License seat deactivated successfully.");
+                    }
                 }
             }
-            _ => {} // Only heartbeat for online-activated licenses
         }
     }
 }

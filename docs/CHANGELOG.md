@@ -2,7 +2,71 @@
 
 All notable changes. Semver once we tag `v1.0.0`.
 
-## [1.2.0] — 2026-04-18
+## [Unreleased] — Production Readiness (P0/P1)
+
+### Added — Infrastructure: PgBouncer in dev compose
+
+- **`docker-compose.yml`**: added `pgbouncer` service (edoburu/pgbouncer, transaction pool mode, port 6432).
+  - `backend` now connects via `pgbouncer:6432` instead of `db:5432`.
+  - `migrator` retains a direct connection to `db:5432` (DDL is incompatible with PgBouncer transaction mode).
+  - `DEFAULT_POOL_SIZE=20`, `MAX_CLIENT_CONN=100`, health-checked by `backend`.
+  - Matches the production overlay (`docker-compose.prod.yml`) which was already running PgBouncer.
+
+### Added — Policy: Redis-backed `BudgetEnforcer`
+
+- **`gateway-policy/src/budget.rs`**: `BudgetEnforcer` refactored from a single in-memory `DashMap` to a dual-backend enum:
+  - `InMemory` — single-replica default, uses `DashMap<BudgetKey, f64>`.
+  - `Redis` — multi-replica safe; uses `INCRBYFLOAT` (atomic) + `EXPIRE` (auto-expiring per budget period).
+  - `BudgetEnforcer::new_redis(client)` constructor.
+  - Budget period TTLs: Daily=86400s, Weekly=604800s, Monthly=2678400s.
+- **`gateway-policy/src/engine.rs`**: `check_budget` and `record_usage` are now async. `record_usage` is wrapped in `tokio::spawn` fire-and-forget to keep the hot path non-blocking.
+- **`gateway-server/src/main.rs`**: `BudgetEnforcer::new_redis` is instantiated at startup when `GATEWAY__REDIS__URL` is configured (with a 5s timeout and graceful fallback).
+
+### Added — Performance: Redis Lua script pre-loading (EVALSHA)
+
+- **`gateway-policy/src/rate_limiter.rs`**: `RateLimiter::preload_scripts()` method added.
+  - On startup, both rate-check (`LUA_CHECK`) and consume (`LUA_CONSUME`) scripts are uploaded via `SCRIPT LOAD`, returning SHA1 digests stored in `ScriptShas`.
+  - All Redis calls use `EVALSHA` first; on `NOSCRIPT` error (e.g. Redis restart) they transparently fall back to inline `EVAL`.
+  - Reduces per-call Redis bandwidth by ~80% under load.
+- **`gateway-server/src/main.rs`**: `rate_limiter.preload_scripts().await` called immediately after Redis connects.
+
+### Added — Observability: LLM log write-error counter
+
+- **`gateway-audit/src/llm_log_service.rs`**: `llm_log_write_errors_total{error_kind}` Prometheus counter registered and incremented on:
+  - `channel_full` — fire-and-forget mpsc buffer overflow (request-path drop).
+  - `db_timeout` — batch insert exceeded timeout.
+  - `db_error` — generic DB error during batch flush.
+  - Flush failures are now logged at `ERROR` level with record count, making silent data loss observable.
+- **`gateway-audit/Cargo.toml`**: added `prometheus`, `once_cell`, `gateway-telemetry` dependencies.
+
+### Added — Observability: Circuit-breaker gauge + new metrics helpers
+
+- **`gateway-telemetry/src/metrics.rs`**:
+  - `circuit_breaker_open{backend_id, tenant_id}` GaugeVec (1=open, 0=closed/half-open).
+  - `llm_log_write_errors_total{error_kind}` CounterVec (mirrors audit crate's counter; registered in shared REGISTRY).
+  - `Metrics::set_circuit_breaker_state(backend_id, tenant_id, open)` helper method.
+  - `Metrics::record_llm_log_write_error(error_kind)` helper method.
+
+### Added — Observability: Prometheus SLO recording rules
+
+- **`deploy/prometheus/rules.yml`** (new file): SLI recording rules covering:
+  - Success ratio: `sli:http_request_success_ratio:{5m,1h}`, `sli:http_request_success_ratio_by_tenant:5m`
+  - Latency: `sli:http_request_duration_{p95,p99}:5m`, per-tenant proxy equivalents
+  - Error-budget burn rate: 1h and 6h windows (Google SRE Workbook multi-window pattern)
+  - Backend health aggregates: ratio and all-unhealthy flag per tenant
+  - LLM telemetry: cost/token rates per tenant, log write error rate
+- **`deploy/prometheus/prometheus.yml`**: registered `rules.yml` in `rule_files:`.
+
+### Changed
+
+- `BudgetEnforcer::check()` and `record_usage()` are now `async fn` (breaking change for direct callers — only `PolicyEngine` calls them).
+- `PolicyEngine` updated to `await` budget calls; no public API change.
+- Scaling table in `docs/architecture.md` updated: PgBouncer listed as shipped, budget enforcer added as in-memory bottleneck.
+- PgBouncer runbook in `docs/operations.md` updated from "add PgBouncer" to reflect it is now a first-class service.
+
+---
+
+
 
 Commercial plan tiers + SSO + feedback + organizations + data-lake exports.
 
@@ -56,6 +120,7 @@ Commercial plan tiers + SSO + feedback + organizations + data-lake exports.
 
 - **`gateway-audit/src/llm_log_service.rs`** — async mpsc-buffered batch-insert (200 entries or 2s flush). Drops silently on overflow rather than blocking the LLM request path.
 - All successful LLM requests captured with redacted request + response for search/replay.
+- **Error observability added (P0-4):** flush failures increment `llm_log_write_errors_total{error_kind}` counter; errors are logged at `ERROR` with record count and data-loss warning.
 
 ### Added — Per-tenant pricing overrides
 

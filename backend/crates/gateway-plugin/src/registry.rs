@@ -85,14 +85,14 @@ impl PluginRegistry {
             }
 
             // Only run relevant plugins for the current phase
-            let runs_here = match (phase, plugin.kind()) {
-                (RequestPhase::BeforeRequest, PluginKind::Input) => true,
-                (RequestPhase::BeforeRequest, PluginKind::Guardrail) => true,
-                (RequestPhase::BeforeRequest, PluginKind::Auth) => true,
-                (RequestPhase::AfterResponse, PluginKind::Output) => true,
-                (RequestPhase::AfterResponse, PluginKind::Observer) => true,
-                _ => false,
-            };
+            let runs_here = matches!(
+                (phase, plugin.kind()),
+                (RequestPhase::BeforeRequest, PluginKind::Input)
+                    | (RequestPhase::BeforeRequest, PluginKind::Guardrail)
+                    | (RequestPhase::BeforeRequest, PluginKind::Auth)
+                    | (RequestPhase::AfterResponse, PluginKind::Output)
+                    | (RequestPhase::AfterResponse, PluginKind::Observer)
+            );
             if !runs_here {
                 continue;
             }

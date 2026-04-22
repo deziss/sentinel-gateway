@@ -18,6 +18,10 @@ pub enum LbStrategy {
 }
 
 impl LbStrategy {
+    /// Parse a strategy name, defaulting to `RoundRobin` for anything unrecognized.
+    /// Not `std::str::FromStr` because the infallible-default contract is load-bearing —
+    /// configs read from DB/env should never fail to deserialize on a typo.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "weighted" | "weighted_round_robin" => LbStrategy::WeightedRoundRobin,

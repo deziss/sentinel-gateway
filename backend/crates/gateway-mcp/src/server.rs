@@ -120,10 +120,8 @@ impl McpServer {
 
         // The session ID would be returned via Mcp-Session-Id header in the HTTP layer
         // We attach it to the response metadata for the handler to extract
-        if let Some(ref mut r) = resp.result {
-            if let Value::Object(ref mut map) = r {
-                map.insert("_session_id".to_string(), Value::String(session.id));
-            }
+        if let Some(Value::Object(ref mut map)) = resp.result {
+            map.insert("_session_id".to_string(), Value::String(session.id));
         }
 
         resp
@@ -386,7 +384,7 @@ impl McpServer {
         let resources = client.list_resources().await.unwrap_or_default();
         let prompts = client.list_prompts().await.unwrap_or_default();
 
-        if let Some(mut backend) = self.registry.get_backend(backend_id).map(|b| b) {
+        if let Some(mut backend) = self.registry.get_backend(backend_id) {
             backend.tools = tools;
             backend.resources = resources;
             backend.prompts = prompts;

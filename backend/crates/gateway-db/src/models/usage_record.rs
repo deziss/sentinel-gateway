@@ -34,3 +34,14 @@ pub struct CreateUsageRecord {
     pub status_code: i32,
     pub error: Option<String>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct UsageRecordAggregation {
+    pub model: Option<String>,
+    pub provider: String,
+    pub total_requests: i64,
+    pub total_tokens_input: i64,
+    pub total_tokens_output: i64,
+    pub total_cost: f64,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+}

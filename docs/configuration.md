@@ -35,9 +35,9 @@ GATEWAY__DATABASE__AUTO_MIGRATE=false
 |-----|------|---------|-------------|
 | `host` | string | `0.0.0.0` | Bind address |
 | `port` | u16 | `8080` | Bind port |
-| `deployment_mode` | string | `local` | `"local"` (offline) or `"platform"` (licensed, connected) |
-| `saas_mode` | bool | `false` | Auto-set to `true` in local mode |
-| `default_tenant_slug` | string? | `None` | Resolved tenant when no header/JWT/subdomain matches |
+| `deployment_mode` | string | `local` | `"local"` (single-tenant), `"paas"` (all-features unlocked via secret), or `"platform"` (multi-tenant SaaS) |
+| `saas_mode` | bool | `false` | Internal flag. Set to `true` when multiple tenants are allowed. |
+| `developer_secret` | string? | `None` | Used in `paas` mode. Must match SHA-256 of `sentinel-paas:{instance_id}` to unlock features. |
 | `max_body_size` | usize | `10485760` | Request body limit (bytes, 10 MB default) |
 | `instance_id` | string? | `None` | UUID; auto-generated on first run and stored in settings |
 | `instance_name` | string? | `None` | Human-readable name for this deployment |
@@ -51,9 +51,9 @@ GATEWAY__DATABASE__AUTO_MIGRATE=false
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `url` | string | `postgres://sentinel:sentinel@localhost:5432/sentinel_gateway` | Connection URL |
-| `max_connections` | u32 | `20` | Pool max. Min connections = `max/4`. |
-| `auto_migrate` | bool | `true` | Run migrations at startup with `pg_advisory_lock`. **Set `false` in production** and use a dedicated migrator job (docker-compose already includes one). |
+| `url` | string | `postgres://sentinel:sentinel@localhost:5432/sentinel_gateway` | Connection URL. In dev compose the backend connects through PgBouncer (`pgbouncer:6432`); the migrator connects directly to Postgres (`db:5432`). |
+| `max_connections` | u32 | `20` | SQLx pool max per replica. With PgBouncer in front this maps to PgBouncer's `DEFAULT_POOL_SIZE`. |
+| `auto_migrate` | bool | `true` | Run migrations at startup with `pg_advisory_lock`. **Set `false` in production** and use a dedicated migrator job. The migrator connects directly to Postgres, bypassing PgBouncer (transaction mode is incompatible with advisory locks). |
 | `enable_query_stats` | bool | `false` | Enable `pg_stat_statements` + `/admin/slow-queries` endpoint. Requires superuser or managed DB with extension preinstalled. |
 | `log_queries` | bool | `false` | Log all SQL at DEBUG. Slow queries (>200ms) always logged at WARN regardless. |
 
@@ -104,18 +104,16 @@ gateway-server generate-keys --output-dir keys
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `license_key` | string? | `None` | Offline JWT license key (for air-gapped deployments) |
-| `public_key_path` | string? | `None` | Path to RSA public key for license verification |
+| `license_key` | string? | `None` | Instance-wide offline license key. |
+| `public_key_path` | string? | `None` | RSA public key for instance license verification. |
 | `grace_period_days` | i64 | `7` | How long after expiry before features degrade |
 
 ## `[platform]`
 
-For connected mode (online license activation).
-
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `url` | string? | `None` | Licencia platform URL, e.g. `https://api.sentinel.io` |
-| `api_key` | string? | `None` | Obtained after `/sync/register` |
+| `licencia_url` | string? | `None` | Licencia server URL for online activation (SaaS mode). |
+| `licencia_api_key` | string? | `None` | API key for authenticating against Licencia server. |
 | `sync_interval_secs` | u64 | `3600` | Platform sync frequency |
 | `auto_sync` | bool | `false` | Background auto-sync at interval |
 
@@ -123,7 +121,9 @@ For connected mode (online license activation).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `url` | string? | `None` | e.g. `redis://localhost:6379`. **Required when `GATEWAY__REPLICAS > 1`**. |
+| `url` | string? | `None` | e.g. `redis://localhost:6379`. **Required when `GATEWAY__REPLICAS > 1`**. When set, both the rate limiter **and the budget enforcer** use Redis backends. Rate-limit Lua scripts are pre-loaded via `SCRIPT LOAD` at startup (EVALSHA on subsequent calls). |
+
+> **Tip:** in dev, `GATEWAY__REDIS__URL` is optional. In production with `replicas > 1`, omitting it causes a fatal startup error (rate limiter) and silent per-replica budget drift (budget enforcer).
 
 ## Standalone env vars (not in TOML)
 

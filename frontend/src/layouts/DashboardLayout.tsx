@@ -69,7 +69,12 @@ export function DashboardLayout() {
   const { has, isLoading: planLoading } = usePlan()
 
   const visibleByRole = (i: NavItem) => !i.minRole || isRole(role, i.minRole)
-  const visibleByFeature = (i: NavItem) => !i.feature || planLoading || has(i.feature)
+  // SuperAdmin bypasses feature gating: they operate the platform, not a single
+  // tenant, so items like Organizations shouldn't disappear when the currently
+  // selected tenant's plan omits a feature.
+  const isSuperAdmin = isRole(role, "super_admin")
+  const visibleByFeature = (i: NavItem) =>
+    !i.feature || planLoading || has(i.feature) || (isSuperAdmin && i.minRole === "super_admin")
   const isVisible = (i: NavItem) => visibleByRole(i) && visibleByFeature(i)
 
   const visibleNavItems = navItems.filter(isVisible)

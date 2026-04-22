@@ -17,6 +17,7 @@ pub mod tenant_pricing;
 pub mod sso;
 pub mod organization;
 pub mod llm_feedback;
+pub mod tenant_license;
 
 pub use tenant::TenantRepository;
 pub use user::UserRepository;
@@ -37,3 +38,4 @@ pub use tenant_pricing::TenantPricingRepository;
 pub use sso::{SsoProviderRepository, SsoIdentityRepository, SsoAuthStateRepository};
 pub use organization::OrganizationRepository;
 pub use llm_feedback::LlmFeedbackRepository;
+pub use tenant_license::TenantLicenseRepository;

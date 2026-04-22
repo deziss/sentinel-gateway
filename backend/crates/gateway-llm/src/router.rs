@@ -30,7 +30,7 @@ impl LlmRouter {
 
     pub fn register(&self, model: impl Into<String>, provider: LlmProvider) {
         let model = model.into();
-        let mut entry = self.routes.entry(model.clone()).or_insert_with(Vec::new);
+        let mut entry = self.routes.entry(model.clone()).or_default();
         entry.push(provider);
         entry.sort_by_key(|p| p.priority);
     }
