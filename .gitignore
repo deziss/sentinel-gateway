@@ -37,3 +37,4 @@ Thumbs.db
 *.key
 *.crt
 *.p12
+graphify-out/
