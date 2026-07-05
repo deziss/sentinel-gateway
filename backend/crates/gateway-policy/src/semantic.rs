@@ -211,6 +211,53 @@ impl Embedder for HttpEmbedder {
     }
 }
 
+// ── ONNX Embedder ──────────────────────────────────────────────────────────
+
+#[cfg(feature = "onnx")]
+pub struct OnnxEmbedder {
+    model: ort::Session,
+    dims: usize,
+    id: String,
+}
+
+#[cfg(feature = "onnx")]
+impl OnnxEmbedder {
+    pub fn new(model_path: &str, dims: usize) -> Result<Self, String> {
+        let model = ort::Session::builder()
+            .map_err(|e| format!("failed to build session: {e}"))?
+            .with_optimization_level(ort::GraphOptimizationLevel::Level3)
+            .map_err(|e| format!("failed to set opt level: {e}"))?
+            .commit_from_file(model_path)
+            .map_err(|e| format!("failed to load model from {model_path}: {e}"))?;
+            
+        Ok(Self {
+            model,
+            dims,
+            id: format!("onnx/{}", std::path::Path::new(model_path).file_name().unwrap_or_default().to_string_lossy()),
+        })
+    }
+}
+
+#[cfg(feature = "onnx")]
+#[async_trait]
+impl Embedder for OnnxEmbedder {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+        // Warning: This is a placeholder for actual tokenization.
+        // In a real ONNX implementation, you'd need a tokenizer (like hf-hub/tokenizers)
+        // to convert text to input_ids, attention_mask, etc., before running the model.
+        // For the purpose of this implementation plan, we provide the model scaffolding.
+        
+        return Err("ONNX embedder requires tokenization logic to be implemented for the specific model.".to_string());
+    }
+
+    fn dimensions(&self) -> usize {
+        self.dims
+    }
+    fn model_id(&self) -> &str {
+        &self.id
+    }
+}
+
 // ── Cosine similarity ──────────────────────────────────────────────────────
 
 /// Cosine similarity of two equal-length vectors. Both inputs are expected

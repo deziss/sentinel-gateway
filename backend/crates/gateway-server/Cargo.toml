@@ -54,3 +54,4 @@ bytes = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
 validator = { workspace = true }
+totp-rs = { workspace = true }

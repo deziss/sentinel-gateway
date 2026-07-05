@@ -223,13 +223,31 @@ pub async fn update(
         Err(_) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Backend not found"}))).into_response(),
     };
 
-    // Build dynamic update SQL — for now use individual field updates
-    // TODO: add a proper update method to BackendRepository
-    if let Some(false) = body.is_active {
-        if let Err(e) = s.backend_repo.delete(id, tenant_id).await {
-            tracing::error!("Failed to deactivate backend: {e}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to update backend"}))).into_response();
+    // Encrypt credentials if provided
+    let encrypted_creds = body.credentials.as_deref().map(|c| {
+        if let Some(ref key) = s.server_config.encryption_key {
+            gateway_core::FieldEncryptor::new(key)
+                .ok()
+                .and_then(|enc| enc.encrypt(c).ok())
+                .unwrap_or_else(|| c.to_string())
+        } else {
+            c.to_string()
         }
+    });
+
+    if let Err(e) = s.backend_repo.update(
+        id,
+        tenant_id,
+        body.name,
+        body.endpoint,
+        encrypted_creds,
+        body.priority,
+        body.weight,
+        body.timeout_ms,
+        body.is_active,
+    ).await {
+        tracing::error!("Failed to update backend: {e}");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Failed to update backend"}))).into_response();
     }
 
     s.audit_service.log(

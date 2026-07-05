@@ -1,0 +1,34 @@
+# LOCAL DEV OVERRIDE — wire sentinel-gateway to the shared local_stack.
+# backend/migrator use host `db` (-> shared postgres alias, db sentinel_gateway)
+# and host `redis` (no auth). Bundled db/redis/otel-collector removed; OTLP is
+# pointed at the shared otel-collector (bring up local_stack observability profile).
+services:
+  migrator:
+    depends_on: !reset null
+    env_file:
+      - .env.local
+    networks:
+      - default
+      - local_stack_backend
+  backend:
+    depends_on: !override              # replace whole node: keep one-shot deps, drop db/redis
+      migrator:
+        condition: service_completed_successfully
+      keygen:
+        condition: service_completed_successfully
+    env_file:
+      - .env.local
+    networks:
+      - default
+      - local_stack_backend
+  frontend:
+    networks:
+      - default                       # talks to backend via compose net only
+
+  db: !reset null
+  redis: !reset null
+  otel-collector: !reset null
+
+networks:
+  local_stack_backend:
+    external: true

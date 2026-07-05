@@ -133,4 +133,46 @@ impl BackendRepository {
         .await?;
         Ok(())
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update(
+        &self,
+        id: Uuid,
+        tenant_id: Uuid,
+        name: Option<String>,
+        endpoint: Option<String>,
+        encrypted_credentials: Option<String>,
+        priority: Option<i32>,
+        weight: Option<i32>,
+        timeout_ms: Option<i32>,
+        is_active: Option<bool>,
+    ) -> DbResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE backends
+            SET 
+                name = COALESCE($3, name),
+                endpoint = COALESCE($4, endpoint),
+                encrypted_credentials = COALESCE($5, encrypted_credentials),
+                priority = COALESCE($6, priority),
+                weight = COALESCE($7, weight),
+                timeout_ms = COALESCE($8, timeout_ms),
+                is_active = COALESCE($9, is_active),
+                updated_at = NOW()
+            WHERE id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .bind(name)
+        .bind(endpoint)
+        .bind(encrypted_credentials)
+        .bind(priority)
+        .bind(weight)
+        .bind(timeout_ms)
+        .bind(is_active)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }

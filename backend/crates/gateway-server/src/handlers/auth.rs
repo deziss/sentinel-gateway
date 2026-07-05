@@ -31,6 +31,7 @@ pub struct LoginRequest {
     pub email: String,
     #[validate(length(min = 1, max = 255))]
     pub password: String,
+    pub mfa_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +121,32 @@ pub async fn login(
         );
 
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid credentials"}))).into_response();
+    }
+
+    // 4.5. Verify MFA if enabled
+    if let Some(mfa_secret) = &user.mfa_secret {
+        let provided_token = match &body.mfa_token {
+            Some(t) => t,
+            None => {
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "MFA token required"}))).into_response();
+            }
+        };
+
+        let secret = totp_rs::Secret::Encoded(mfa_secret.to_string());
+        let totp = match totp_rs::TOTP::new(
+            totp_rs::Algorithm::SHA1,
+            6,
+            1,
+            30,
+            secret.to_bytes().unwrap_or_default(),
+        ) {
+            Ok(totp) => totp,
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Invalid MFA configuration"}))).into_response(),
+        };
+
+        if !totp.check_current(provided_token).unwrap_or(false) {
+            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid MFA token"}))).into_response();
+        }
     }
 
     // 5. Success — clear lockout
