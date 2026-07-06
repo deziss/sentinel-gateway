@@ -139,6 +139,8 @@ pub async fn login(
             1,
             30,
             secret.to_bytes().unwrap_or_default(),
+            None,
+            "".to_string(),
         ) {
             Ok(totp) => totp,
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Invalid MFA configuration"}))).into_response(),

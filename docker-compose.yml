@@ -129,7 +129,7 @@ services:
       GATEWAY__TELEMETRY__PROMETHEUS_ENABLED: "true"
       GATEWAY__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-http://otel-collector:4317}
     ports:
-      - "8080:8080"
+      - "8085:8080"
     volumes:
       - ./backend/keys:/app/keys:ro
       - ./backend/config:/app/config:ro
